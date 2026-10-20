@@ -8,6 +8,8 @@
 
 **状态**：预留（S0 占位，触发式启动）——尚未启动，无实现
 
+**今天的实现**：`core:pkg/risk`（`RiskManager` / `RegimeDetector` / `StopLossChecker` / `CheckOrder`）+ `core:pkg/compliance`（异常交易 / 减持 / 大额报送）+ `core:pkg/alert`（6 检测器 + 通道）+ `quant.risk_events` / `audit_logs` 表。
+
 ## 2. 构建 / 测试（必须单仓可跑）
 
 ```bash
