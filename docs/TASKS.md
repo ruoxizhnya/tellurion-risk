@@ -49,6 +49,7 @@ verified-by: 首次建立本仓台账（QT-08 十二仓自治三件套）
 | 单号 | 主题 | 在哪 |
 |---|---|---|
 | QT-42 | X3 风控服务（规则真相源 + 进程内 RiskPolicy） | `tellurion:docs/TASKS.md` |
+| QT-08 | 本仓 CI / AGENTS / 台账由该单一并补齐 | `tellurion:docs/TASKS.md` |
 
 ---
 
