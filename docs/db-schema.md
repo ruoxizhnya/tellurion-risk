@@ -20,7 +20,7 @@ verified-by: 功能边界固化（三份契约：db / api / dataflow）
 | `risk.limits` | 账户 / 策略 / 标的级限额 | 待建 |
 | `risk.risk_events` | 裁决事件留痕（`OrderIntent` 注释已指向 `quant.risk_events`，**表未建**） | 待建，迁入 `risk` |
 | `risk.circuit_orders` | 熔断指令下发记录（幂等） | 待建 |
-| `risk.audit_logs` | **规则与审批的操作审计**（谁改了哪条规则、谁批的） | 从现 `audit_logs` 迁入 |
+| `risk.audit_logs` | **规则与审批的操作审计**（谁改了哪条规则、谁批的） | 待建（**新表**，与现 `audit_logs` 无关、不复用——后者是 ADR-017 鉴权访问审计（`tellurion:pkg/auth` 写入），留 core） |
 
 **红线**：`risk` schema 只有本仓能写；内核与实盘只经 port 读快照、经端口回传事件。
 
