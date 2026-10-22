@@ -109,7 +109,7 @@ contracts（规则 DTO / 事件 DTO）+ kit（logging/http/db）
 | `RuleSnapshot`（目标） | **不存在**；`risk.rule_snapshots` 待建（`docs/db-schema.md` §1） | 目标 `tellurion-contracts/risk`（新包，X3b 落；届时应已有 core + 本仓两个使用方） | 解析失败 / hash 不匹配 ⇒ 拒绝开跑（不回落 latest） | 内容寻址：任一规则内容变 ⇒ 新 hash；**hash 算法变更 = 域标签 v2（全历史 hash 作废）**。样板 = `FactorDefinition.VersionHash()`（`pkg/domain/factor_def.go:151`：canonical JSON 的 SHA-256，加载时重新 derive 校验，见 `pkg/storage/factor_definition.go:94-97`） |
 | `RuleEvent`（目标） | 不存在；`risk.risk_events` 待建；`OrderIntent.RunID` 注释仍指向 `quant.risk_events`（`pkg/risk/interfaces.go:7/31`）——**历史指向**，X3b 落 `risk` 时改注释 | 目标 `tellurion-contracts/risk`（同 `RuleSnapshot`） | 去重键 `run_id + order_id + event_seq`；批量部分失败必须**逐条**报，不许全量 500 / 全量重发 | 加字段 = MINOR；未知字段**不得丢弃**（审计原文进 `payload` JSONB） |
 | `BreakerCommand`（目标） | 不存在；`risk.circuit_orders` 待建 | 同上 | 幂等键 `breaker_id`；同键同载荷 ⇒ `already_applied`；同键不同载荷 ⇒ **409 `idempotency_conflict`**（不许静默成功） | 幂等键语义 frozen；新增动作枚举 = MINOR（旧执行方 fail-closed 拒收未知动作） |
-| `risk_rules_hash`（目标值） | 定义在 `pkg/backtest/contracts/provenance.go:174`，无条件进 canonical（`:216`）；HEAD 无生产者 / 落库（F3） | 已属 contracts（QT-03 冻结域） | 空串 = 未登记；**不得用空串冒充「无风控」** | SHA-256 hex（64 字符）；域标签变更 = breaking |
+| `risk_rules_hash`（目标值） | 定义在 `pkg/backtest/contracts/provenance.go:174`，无条件进 canonical（`:216`）；QT-63 已落表与写入路径，但生产者今天写空串（F3） | 已属 contracts（QT-03 冻结域） | 空串 = 未登记；**不得用空串冒充「无风控」** | SHA-256 hex（64 字符）；域标签变更 = breaking |
 
 ### 9.4 C 组 · 服务对外 HTTP 面（升格后）
 
@@ -140,7 +140,7 @@ contracts（规则 DTO / 事件 DTO）+ kit（logging/http/db）
 | `risk.risk_events` | 待建；`OrderIntent` 注释指向 `quant.risk_events`（`pkg/risk/interfaces.go:7/31`） | 唯一 owner = 本仓；去重键 `(run_id, order_id, event_seq)` | 事件回传允许延迟、**不允许丢**；部分失败 → `207` + 逐条明细 |
 | `risk.circuit_orders` | 待建 | `breaker_id` UNIQUE；记录下发与执行状态 | 同键同载荷 → `already_applied`；同键不同载荷 → `409` |
 | `risk.audit_logs` | 待建（**新表**） | 规则 / 审批 / 熔断的人操作留痕 | **不迁、不复用** core 的 `audit_logs`：后者是 ADR-017 鉴权访问审计（`pkg/storage/postgres.go:335` DDL、`pkg/auth/auth.go:492` `RecordAudit` 写入），语义不同（`docs/db-schema.md` §1 注） |
-| `quant.run_provenance.risk_rules_hash` | HEAD 无此表（F3） | QT-63 落表；X3b 填真值；只存「输入身份」，不存 status | 同一 `run_id` 写不同 hash ⇒ fail-loud（QT-63 ④-⑦） |
+| `quant.run_provenance.risk_rules_hash` | 表与写入路径已落（QT-63），生产者写空串（F3） | X3b 把空串换成真值；只存「输入身份」，不存 status | 同一 `run_id` 写不同 hash ⇒ fail-loud（QT-63 ④-⑦） |
 
 ### 9.6 E 组 · 版本策略汇总（QT-19 口径）
 
