@@ -56,8 +56,8 @@ go test ./...
 
 | 依赖 | 版本 | 说明 |
 |---|---|---|
-| `github.com/ruoxizhnya/tellurion-contracts` | 未引入（`v0.1.0` 已发 tag） | `RiskPolicy` 相关 DTO 只认契约；当前规则侧零跨仓依赖，接入时 pin tag 不 pin 伪版本 |
-| `github.com/ruoxizhnya/tellurion-kit` | 未引入（`v0.1.0` 已发 tag） | 日志 / HTTP / 存储连接；HTTP 暂用标准库 `net/http` |
+| `github.com/ruoxizhnya/tellurion-contracts` | 未引入（最新 `v0.3.0`，2026-10-23 发版） | `RiskPolicy` 相关 DTO 只认契约；当前规则侧零跨仓依赖，接入时 pin tag 不 pin 伪版本 |
+| `github.com/ruoxizhnya/tellurion-kit` | 未引入（`v0.1.0` 已发版） | 日志 / HTTP / 存储连接；HTTP 暂用标准库 `net/http` |
 | `github.com/jackc/pgx/v5` | `v5.7.5` | PostgreSQL 驱动。仅 `cmd/riskservice` 空白导入 `stdlib` 注册 `database/sql` 驱动；`internal/pgstore` 只用 `database/sql`，不直接依赖 pgx API（`pgconn` 仅用于唯一约束错误识别） |
 
 > 跨仓依赖**只认版本号**（伪版本或 tag），不认源码路径。契约变更走 `tellurion-contracts` 的发布，不走"顺手改一下"。
