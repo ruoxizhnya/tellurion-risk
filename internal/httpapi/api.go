@@ -7,22 +7,35 @@ import (
 	"log"
 	"net/http"
 
+	"tellurion-risk/internal/event"
 	"tellurion-risk/internal/rule"
 )
 
 // MaxBodyBytes 是单个请求体上限。管理面只有小 JSON。
 const MaxBodyBytes = 1 << 20
 
-// Server 是规则真相源的 HTTP 面（4 个规则管理端点 + 3 个快照端点）。
+// Server 是规则真相源的 HTTP 面（4 个规则管理端点 + 3 个快照端点 + 事件回传）。
 // monitor/* 三端点因 U7 未裁、形状不冻结，不在本切片（docs/ARCHITECTURE.md §9.4 / §9.6）。
 type Server struct {
-	svc *rule.Service
-	mux *http.ServeMux
+	svc    *rule.Service
+	events *event.Service
+	mux    *http.ServeMux
+}
+
+// Option 按需装配可选服务（事件 / 熔断）；不装配则不注册对应路由。
+type Option func(*Server)
+
+// WithEvents 装配 X3c 事件回传端点。
+func WithEvents(svc *event.Service) Option {
+	return func(s *Server) { s.events = svc }
 }
 
 // New 构造 Server 并注册路由。
-func New(svc *rule.Service) *Server {
+func New(svc *rule.Service, opts ...Option) *Server {
 	s := &Server{svc: svc, mux: http.NewServeMux()}
+	for _, opt := range opts {
+		opt(s)
+	}
 	s.mux.HandleFunc("POST /api/risk/rules", s.createRule)
 	s.mux.HandleFunc("GET /api/risk/rules", s.listRules)
 	s.mux.HandleFunc("PUT /api/risk/rules/{id}", s.updateRule)
@@ -32,6 +45,9 @@ func New(svc *rule.Service) *Server {
 	// bundle 与快照本体同一形状：规则包就是 canonical snapshot JSON，ParseBundle 直接吃
 	//（run 前 1 次，按 hash 缓存永不失效）。
 	s.mux.HandleFunc("GET /api/risk/snapshots/{hash}/bundle", s.getSnapshot)
+	if s.events != nil {
+		s.mux.HandleFunc("POST /api/risk/events", s.ingestEvents)
+	}
 	return s
 }
 
@@ -58,6 +74,17 @@ type listBody struct {
 type resolveBody struct {
 	RiskRulesHash string        `json:"risk_rules_hash"`
 	Snapshot      rule.Snapshot `json:"snapshot"`
+}
+
+type eventsEnvelope struct {
+	Events []json.RawMessage `json:"events"`
+}
+
+type eventsResultBody struct {
+	Accepted   int             `json:"accepted"`
+	Duplicates int             `json:"duplicates"`
+	Failed     []event.Failure `json:"failed,omitempty"`
+	Code       string          `json:"code,omitempty"`
 }
 
 func (s *Server) createRule(w http.ResponseWriter, r *http.Request) {
@@ -179,6 +206,32 @@ func (s *Server) getSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	// 强幂等：同一 hash 两次拉取字节一致（json.Marshal 对同一结构确定性编码）。
 	writeJSON(w, http.StatusOK, snap)
+}
+
+// ingestEvents 回传一批裁决事件。整批不可解析 → 400；部分条目失败 → 207 partial_failure；
+// 全部成功 → 200。事件回传不在热路径，端点是同步批量确认（调用方只重发 failed）。
+func (s *Server) ingestEvents(w http.ResponseWriter, r *http.Request) {
+	var req eventsEnvelope
+	if err := decodeBody(w, r, &req); err != nil {
+		writeInvalidParams(w, err)
+		return
+	}
+	result, err := s.events.Ingest(r.Context(), req.Events)
+	if err != nil {
+		if errors.Is(err, event.ErrInvalidParams) {
+			writeInvalidParams(w, err)
+			return
+		}
+		writeError(w, err)
+		return
+	}
+	status := http.StatusOK
+	body := eventsResultBody{Accepted: result.Accepted, Duplicates: result.Duplicates, Failed: result.Failed}
+	if len(result.Failed) > 0 {
+		status = http.StatusMultiStatus
+		body.Code = "partial_failure"
+	}
+	writeJSON(w, status, body)
 }
 
 // decodeBody 严格解码：拒未知字段、拒尾随内容、限制体积。

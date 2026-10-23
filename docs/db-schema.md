@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: QT-42 PG Store + risk.limits 建表——DDL 与 internal/rule/ddl.go 逐表对表
+verified-by: QT-42 X3c 事件表落库——DDL 与 internal/rule/ddl.go 逐表对表
 ---
 
 # DB Schema — tellurion-risk
@@ -18,7 +18,7 @@ verified-by: QT-42 PG Store + risk.limits 建表——DDL 与 internal/rule/ddl.
 | `risk.rule_revisions` | 版本追加 + 审批状态（draft→approved→active→deprecated）+ `version_hash` | ✅ 同上 |
 | `risk.rule_snapshots` | run 前下发的规则快照（内容寻址；回测结果记 `risk_rules_hash`） | ✅ DDL + Memory/PG 读写（`internal/rule/snapshot.go` / `store.go` / `internal/pgstore`） |
 | `risk.limits` | 账户 / 策略 / 标的级限额 | 🔶 DDL 已落（2026-10-24，仅建表；读写路径与端点未冻结） |
-| `risk.risk_events` | 裁决事件留痕（`OrderIntent` 注释已指向 `quant.risk_events`，**表未建**） | ⬜ X3c，迁入 `risk` |
+| `risk.risk_events` | 裁决事件留痕（run 后异步批量回传；去重键 `run_id + order_id + event_seq`，`raw` 保留原文） | ✅ DDL + Memory/PG（2026-10-24，X3c） |
 | `risk.circuit_orders` | 熔断指令下发记录（幂等） | ⬜ X3d |
 | `risk.audit_logs` | **规则与审批的操作审计**（谁改了哪条规则、谁批的） | 🔶 DDL 已落（**新表**，与现 `audit_logs` 无关、不复用——后者是 ADR-017 鉴权访问审计（`tellurion:pkg/auth` 写入），留 core） |
 
@@ -38,6 +38,10 @@ verified-by: QT-42 PG Store + risk.limits 建表——DDL 与 internal/rule/ddl.
   `CHECK (scope IN (...))` 与 Go 侧冻结枚举同源；`CHECK ((scope = 'global') = (subject = ''))` ——
   `global` 无主体，其余 scope 必须给主体（账户 id / 策略 id / 标的代码）。
   本切片只建表，读写路径与端点未冻结（登记在 `docs/TASKS.md` QT-42 未落项）。
+- `risk_events`（2026-10-24，X3c）：`PRIMARY KEY (run_id, order_id, event_seq)` —— 去重键即主键；
+  `CHECK (event_seq >= 0)`；`raw JSONB NOT NULL` 保存事件原文（未知字段不丢），
+  `payload JSONB` 是调用方显式给的审计载荷；`received_at` 由服务端盖，`event_ts` 是调用方时间。
+  写入按批事务：任何一条失败整批回滚；主键冲突 = duplicate（`ON CONFLICT DO NOTHING` 计数，不算失败）。
 - `version_hash` 由 `rule_id + revision + scope + type + 规范化 params` 派生（域 `tellurion.risk_rule_version_hash.v1`），
   不含 `description` / `status` / 时间（见 `docs/adr/0002-规则版本-hash-与审批状态机的裁决.md`）。
 
@@ -101,9 +105,12 @@ verified-by: QT-42 PG Store + risk.limits 建表——DDL 与 internal/rule/ddl.
 - **PG 事务边界（2026-10-24）**：Service 的读-改-写全部经 `Store.Tx`；PG 事务内 `GetDefinition` 用
   `SELECT ... FOR UPDATE` 行锁，Memory 用「全量状态快照 + 失败还原」模拟同一回滚语义。
   Service 不再持有进程内互斥锁。裁决见 `docs/adr/0003-pg-store-与事务边界.md`。
+- **事件写入路径定为服务侧批量回传（2026-10-24，X3c）**：内核 / 实盘在 run 后调 `POST /events`，
+  去重键 `(run_id, order_id, event_seq)`；未知字段保留在 `raw`，不丢原文。
+  R2 的「服务侧异步收集 vs 内核回调」按此落地为**批量回传 + 服务端原子落库**；监控读取侧仍随 U7。
 
 ## 6. 待定
 
-- `risk_events` 的写入路径（服务侧异步收集 vs 内核回调）未定稿，见 design §4 与 ADR-D20（R2）。
 - **审计 actor 来源**：鉴权面（QT-50 ④）未落，当前审计 `actor` 为空串；角色矩阵与 actor 注入方式随 QT-50 定（R4）。
 - **`risk.limits` 的读写路径**：表已建，但限额的读取口径（快照附带 / 独立端点）与写入端点未冻结（R2 相关）。
+- **事件监控聚合（读取侧）**：`risk_events` 已可写；`monitor/*` 三端点的聚合口径随 U7 未裁。

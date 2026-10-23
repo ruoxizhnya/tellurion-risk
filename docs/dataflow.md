@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: QT-42 PG Store 与事务边界实装——并发写/回滚语义与 internal/rule · internal/pgstore 对表
+verified-by: QT-42 X3c 事件回传实装——批量/去重/207 与 internal/event · risk.risk_events 对表
 ---
 
 # Dataflow — tellurion-risk
@@ -20,12 +20,12 @@ tellurion-risk  ── 写 risk.rule_defs / risk.rule_revisions / risk.audit_log
    ▼
 core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 边界已备（rule.ParseBundle），
    │                                                        core 侧消费接线未做（run 的 risk_rules_hash 仍写空串，F3）
-   └── 异步事件回传 ──►  POST /api/risk/events ──►  risk.risk_events   ⛔ X3c
+   └── 异步事件回传 ──►  POST /api/risk/events ──►  risk.risk_events   ✅ X3c（批量 + 去重键 + 207）
 ```
 
-**现状（2026-10-24）**：左上半段（规则真相源 ①~③）与快照读侧（④ resolve / snapshots / bundle）已实现，
-持久化有 Memory 与 PG（事务边界见 ADR-0003）；core 侧消费接线、事件回传、熔断、监控未落地，
-未落项逐条登记在 `docs/TASKS.md` QT-42 施工记录。
+**现状（2026-10-24）**：左上半段（规则真相源 ①~③）、快照读侧（④ resolve / snapshots / bundle）与
+事件回传（run 后批量）已实现，持久化有 Memory 与 PG（事务边界见 ADR-0003）；
+core 侧消费接线、熔断、监控未落地，未落项逐条登记在 `docs/TASKS.md` QT-42 施工记录。
 
 ## 2. 关键时序
 
@@ -63,10 +63,12 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
 10. 每笔 `CheckOrder(order)` → 进程内裁决 → 通过 / 拒绝 / 降规模
 11. 事件进本地队列
 
-### run 后（异步）—— ⛔ X3c / X3d
+### run 后（异步）—— ✅ X3c；熔断 / 监控未落
 
-12. 批量 `POST /api/risk/events` → 落 `risk_events`
-13. 监控层聚合敞口与告警；越限触发 `POST /breakers`（U7 未裁 ⇒ 监控三端点形状不冻结）
+12. 批量 `POST /api/risk/events` → 逐条校验（缺 `run_id` / `order_id` / `ts` 记 failed）→
+    合法条目按 `(run_id, order_id, event_seq)` 幂等落 `risk_events`：已存在 = duplicate（200 计数），
+    单条不合法 = 207 `partial_failure` + `failed[{index, code, message}]`；整批落库失败 = 500，重试整批
+13. 监控层聚合敞口与告警；越限触发 `POST /breakers`（U7 未裁 ⇒ 监控三端点形状不冻结）— ⛔
 
 ## 3. 失败模式（每一处 fail-closed 都要能指名）
 
@@ -80,7 +82,7 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
 | 快照 hash 与内容不符（写入 / 读取 / ParseBundle） | 内容寻址被破坏（缓存串号 / 内容被改） | `ErrSnapshotMismatch`，500 `internal` + 告警日志，fail-loud 不吞 | ✅（三处同检：`store.go` 写/读 + `ParseBundle`） |
 | 服务不可用 | 拿不到规则快照 | **拒绝开跑**（不许用默认限额） | ✅（resolve 侧：`no_approved_rules` / `snapshot_not_found` 拒绝；core 接线后由调用方执行） |
 | 规则被改但 run 里没记 hash | 结果不可复现 | `risk_rules_hash` 必写进结果 | ⛔ core 侧接线（F3） |
-| 事件回传失败 | 留痕缺失 | 本地队列 + 重试；允许延迟，不允许丢 | ⛔ X3c |
+| 事件回传失败 | 留痕缺失 | 批量原子落库：整批失败 500 后重试整批（去重键幂等）；单条不合法 207 只重发 failed；允许延迟，不允许丢 | ✅（X3c：`internal/event` + `risk.risk_events` 主键去重） |
 | 熔断指令重复 | 重复平仓 | 幂等键 | ⛔ X3d |
 
 ## 4. 不变量（可被测试钉住的）
@@ -94,6 +96,7 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
 7. 定义级 `CHECK ((status='active') = (active_revision IS NOT NULL))` 恒成立——新 draft 修订不清空 `active_revision`。✅
 8. `risk_rules_hash` 只由 active 快照内容派生（排序 + canonical params，不含 `created_at`）；钉住的历史 hash 永不失效、不回退 latest。✅ `TestSnapshotHash_IsContentAddressed` / `TestResolve_PinnedHashNeverFallsBack`
 9. 写路径的「读-改-写」全部在 `Store.Tx` 内；中途失败整笔回滚（Memory 与 PG 同语义）。✅ `TestMemoryTx_RollsBackAllWrites` / `TestServiceApprove_RollsBackAllWritesOnFailure`（ADR-0003）
+10. 事件按 `(run_id, order_id, event_seq)` 幂等：同键重放只计 duplicate、不重复落库；未知字段保留在原文。✅ `TestIngest_DedupesByRunOrderSeq` / `TestIngest_PartialFailureKeepsValidItems`
 
 ## 5. 与契约文档的关系
 

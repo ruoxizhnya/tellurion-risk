@@ -506,6 +506,9 @@ func TestMigrations_PinTheAdjudicatedShape(t *testing.T) {
 		"risk.limits",
 		"PRIMARY KEY (scope, subject, limit_key)",
 		"CHECK ((scope = 'global') = (subject = ''))",
+		"risk.risk_events",
+		"PRIMARY KEY (run_id, order_id, event_seq)",
+		"CHECK (event_seq >= 0)",
 	}
 	for _, want := range required {
 		if !strings.Contains(all, want) {

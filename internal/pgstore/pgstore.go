@@ -18,15 +18,19 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"tellurion-risk/internal/event"
 	"tellurion-risk/internal/rule"
 )
 
-// Store 在 *sql.DB 上实现 rule.Store。
+// Store 在 *sql.DB 上实现 rule.Store 与 event.Store。
 type Store struct {
 	db *sql.DB
 }
 
-var _ rule.Store = (*Store)(nil)
+var (
+	_ rule.Store  = (*Store)(nil)
+	_ event.Store = (*Store)(nil)
+)
 
 // New 构造 Store。db 的生命周期由调用方管理。
 func New(db *sql.DB) *Store { return &Store{db: db} }
@@ -50,6 +54,11 @@ type querier interface {
 
 // Tx 开启数据库事务并把事务视图交给回调；回调返回错误即回滚。
 func (s *Store) Tx(ctx context.Context, fn func(rule.Store) error) error {
+	return s.inTx(ctx, func(tx *sql.Tx) error { return fn(&txStore{q: tx}) })
+}
+
+// inTx 是事务骨架：写路径共用，保证 BEGIN / ROLLBACK / COMMIT 只有一处实现。
+func (s *Store) inTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("pgstore: begin: %w", err)
@@ -60,7 +69,7 @@ func (s *Store) Tx(ctx context.Context, fn func(rule.Store) error) error {
 			_ = tx.Rollback()
 		}
 	}()
-	if err := fn(&txStore{q: tx}); err != nil {
+	if err := fn(tx); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -521,6 +530,46 @@ func (s *Store) GetSnapshot(ctx context.Context, hash string) (rule.Snapshot, er
 
 func (t *txStore) GetSnapshot(ctx context.Context, hash string) (rule.Snapshot, error) {
 	return getSnapshot(ctx, t.q, hash)
+}
+
+// PutEvents 原子写入一批裁决事件：去重键冲突的条目跳过（计入 duplicates），
+// 其余全部落库；任何一条失败整批回滚（调用方重试整批，去重键保证幂等）。
+func (s *Store) PutEvents(ctx context.Context, records []event.Record) (int, int, error) {
+	accepted := 0
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		for _, rec := range records {
+			var payload any
+			if len(rec.Payload) > 0 {
+				payload = string(rec.Payload)
+			}
+			raw := rec.Raw
+			if len(raw) == 0 {
+				raw, _ = json.Marshal(rec.Event)
+			}
+			res, err := tx.ExecContext(ctx, `
+				INSERT INTO risk.risk_events
+					(run_id, order_id, event_seq, symbol, verdict, reason, payload, event_ts, raw, received_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10)
+				ON CONFLICT (run_id, order_id, event_seq) DO NOTHING`,
+				rec.RunID, rec.OrderID, rec.EventSeq, rec.Symbol, rec.Verdict, rec.Reason,
+				payload, rec.Ts, string(raw), rec.ReceivedAt)
+			if err != nil {
+				return err
+			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if n > 0 {
+				accepted++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	return accepted, len(records) - accepted, nil
 }
 
 // mapPgError 把唯一约束冲突翻译成领域哨兵；其他错误原样返回。

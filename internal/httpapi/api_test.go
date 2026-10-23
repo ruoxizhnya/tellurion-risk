@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"tellurion-risk/internal/event"
 	"tellurion-risk/internal/rule"
 )
 
@@ -25,7 +26,14 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatalf("rule.New: %v", err)
 	}
-	srv := New(svc)
+	events, err := event.New(event.Options{
+		Store: event.NewMemory(),
+		Now:   func() time.Time { return time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("event.New: %v", err)
+	}
+	srv := New(svc, WithEvents(events))
 	return &harness{srv: srv, client: &http.Client{}}
 }
 

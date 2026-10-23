@@ -71,6 +71,22 @@ var migrationStatements = []string{
 		PRIMARY KEY (scope, subject, limit_key),
 		CHECK ((scope = 'global') = (subject = ''))
 	)`,
+
+	// risk_events 是 run 后异步回传的裁决事件留痕。去重键 (run_id, order_id, event_seq)；
+	// raw 保存事件原文（未知字段不丢），payload 是调用方显式给的审计载荷。
+	`CREATE TABLE IF NOT EXISTS risk.risk_events (
+		run_id      TEXT NOT NULL,
+		order_id    TEXT NOT NULL,
+		event_seq   BIGINT NOT NULL CHECK (event_seq >= 0),
+		symbol      TEXT NOT NULL DEFAULT '',
+		verdict     TEXT NOT NULL DEFAULT '',
+		reason      TEXT NOT NULL DEFAULT '',
+		payload     JSONB,
+		event_ts    TIMESTAMPTZ NOT NULL,
+		raw         JSONB NOT NULL,
+		received_at TIMESTAMPTZ NOT NULL,
+		PRIMARY KEY (run_id, order_id, event_seq)
+	)`,
 }
 
 // Migrations 返回迁移语句的副本（调用方不能改到内部数组）。

@@ -1,17 +1,18 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: QT-42 PG Store 与事务边界实装——接口面未变，持久化与事务语义对表
+verified-by: QT-42 X3c 事件回传实装——POST /events 形状、207 partial_failure 与去重键对表
 ---
 
 # API Schema — tellurion-risk
 
-> **实现状态（2026-10-24）**：**规则管理 4 端点 + 快照 3 端点已落地**（`POST /rules`、`PUT /rules/{id}`、
-> `POST /rules/{id}/approve`、`GET /rules`、`POST /resolve`、`GET /snapshots/{hash}`、`GET /snapshots/{hash}/bundle`），
-> 实现在 `internal/rule`（快照内容寻址 + `ParseBundle` 进程内边界），传输在 `internal/httpapi`
+> **实现状态（2026-10-24）**：**规则管理 4 端点 + 快照 3 端点 + 事件回传 1 端点已落地**（`POST /rules`、
+> `PUT /rules/{id}`、`POST /rules/{id}/approve`、`GET /rules`、`POST /resolve`、`GET /snapshots/{hash}`、
+> `GET /snapshots/{hash}/bundle`、`POST /events`），实现在 `internal/rule`（快照内容寻址 + `ParseBundle`
+> 进程内边界）与 `internal/event`（事件校验 + 去重键），传输在 `internal/httpapi`
 > （标准库 `net/http`，不是 gin），持久化有 Memory 与 PG（`internal/pgstore`，启动时执行幂等 DDL；
 > 事务边界见 ADR-0003）。
-> **未落地**：`POST /events`（X3c）、`POST /breakers`（X3d）、`monitor/*` 三端点（U7 未裁、形状不冻结）、
+> **未落地**：`POST /breakers`（X3d）、`monitor/*` 三端点（U7 未裁、形状不冻结）、
 > 鉴权（QT-50 ④）、core 侧消费接线（run 的 `risk_rules_hash` 生产者仍写空串，F3）。
 > 未落项逐条登记在 `docs/TASKS.md` QT-42 施工记录。
 >
@@ -40,7 +41,7 @@ verified-by: QT-42 PG Store 与事务边界实装——接口面未变，持久�
 | POST | `/api/risk/resolve` | 规则集引用（锁定 hash 或 latest，二选一）→ 快照元数据 `{risk_rules_hash, snapshot}` | ✅ |
 | GET | `/api/risk/snapshots/{hash}` | 取规则快照（同一 hash 两次拉取**字节一致**；按 hash 缓存永不失效） | ✅ |
 | GET | `/api/risk/snapshots/{hash}/bundle` | 拉规则包（run 前 1 次；body = canonical snapshot JSON，`rule.ParseBundle` 直接吃） | ✅ |
-| POST | `/api/risk/events` | 回传裁决事件（异步批量，**非热路径**）— ⛔ X3c |
+| POST | `/api/risk/events` | 回传裁决事件（异步批量，**非热路径**） | ✅ X3c（2026-10-24） |
 | POST | `/api/risk/breakers` | 下发熔断指令（幂等键）— ⛔ X3d |
 
 ### 监控（聚合层）
@@ -54,6 +55,12 @@ verified-by: QT-42 PG Store 与事务边界实装——接口面未变，持久�
 > `GET /api/risk/rules` 的列表项：`{rule_id, revision, status, version_hash, scope, type, description?, active_revision?}`；
 > `status` 是 **head revision** 的状态（新建 draft 修订后 head 是 `draft`，即使上一条仍 `active`）；
 > `active_revision` = 当前生效的 revision（缺省 = 从未激活）。空列表编码为 `{"rules":[],"count":0}`，**不是 `null`**。
+>
+> `POST /api/risk/events`（X3c）：
+> 请求 `{"events":[{run_id, order_id, event_seq, symbol?, verdict?, reason?, payload?, ts}]}`；
+> 全部成功 → `200 {accepted, duplicates}`；部分条目失败 → `207 {accepted, duplicates, failed:[{index, code, message}], code:"partial_failure"}`。
+> 去重键 `run_id + order_id + event_seq`；未知字段不丢（落库原文进 `raw` JSONB）。
+> 整批不可解析（含空数组）→ `400 invalid_params`；落库失败 → `500 internal`，调用方重试整批（去重键保证幂等）。
 
 ## 2. 错误码与 fail-closed 语义
 
@@ -74,7 +81,7 @@ verified-by: QT-42 PG Store 与事务边界实装——接口面未变，持久�
 | 无 approved 版本 | 404 `no_approved_rules` — ✅ | run 前拒绝启动 |
 | 规则 hash 不存在 | 404 `snapshot_not_found` — ✅ | 拒绝（不回退 latest） |
 | 熔断指令重复（同键同载荷） | 200 + `already_applied` — ⛔ X3d | 视为成功（幂等） |
-| 事件批量部分失败 | 207 + `partial_failure` + 失败明细 — ⛔ X3c | 重试失败项，不重发全量 |
+| 事件批量部分失败 | 207 + `partial_failure` + 失败明细 — ✅ X3c | 重试失败项，不重发全量 |
 | 其它 | 500 `internal`（**不吐内部原文**） | 服务端问题 |
 
 > **`rule_deprecated` 为什么本切片不产生**：冻结的接口面里没有 deprecate 端点，「已废弃」只在 revision 级出现——
@@ -96,7 +103,7 @@ verified-by: QT-42 PG Store 与事务边界实装——接口面未变，持久�
 - `PUT /rules/{id}` 必须带 `base_revision`：不匹配当前 head → 409 `revision_conflict`（防丢更新）。
 - `POST /rules/{id}/approve` 对**同一 revision** 重放幂等（同 `version_hash`）；状态机之外没有第二条路。
 - `POST /breakers` 必须带幂等键（`breaker_id`），同键同载荷重复调用不重复执行；同键不同载荷 → 409。
-- `POST /events` 支持批量 + 去重键（`run_id + order_id + event_seq`）；部分失败返回 207，只重发失败项。
+- `POST /events` 支持批量 + 去重键（`run_id + order_id + event_seq`）；部分失败返回 207，只重发失败项；整批落库失败返回 500，可整批重试（去重幂等）。✅
 - `resolve` / `snapshots` / `rules`（GET）只读，可任意重试。
 
 ## 4. 版本与兼容

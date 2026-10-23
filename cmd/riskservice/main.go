@@ -15,6 +15,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib" // 注册 "pgx" database/sql 驱动
 
+	"tellurion-risk/internal/event"
 	"tellurion-risk/internal/httpapi"
 	"tellurion-risk/internal/pgstore"
 	"tellurion-risk/internal/rule"
@@ -25,19 +26,23 @@ func main() {
 	dsn := flag.String("dsn", os.Getenv("RISK_DATABASE_URL"), "PostgreSQL DSN (empty = in-memory store)")
 	flag.Parse()
 
-	store, closeStore, err := openStore(*dsn)
+	stores, closeStores, err := openStores(*dsn)
 	if err != nil {
 		log.Fatalf("riskservice: %v", err)
 	}
-	defer closeStore()
+	defer closeStores()
 
-	svc, err := rule.New(rule.Options{Store: store})
+	svc, err := rule.New(rule.Options{Store: stores.rules})
+	if err != nil {
+		log.Fatalf("riskservice: %v", err)
+	}
+	events, err := event.New(event.Options{Store: stores.events})
 	if err != nil {
 		log.Fatalf("riskservice: %v", err)
 	}
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           httpapi.New(svc).Handler(),
+		Handler:           httpapi.New(svc, httpapi.WithEvents(events)).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	log.Printf("riskservice: listening on %s", *addr)
@@ -46,26 +51,33 @@ func main() {
 	}
 }
 
-// openStore 选择持久化实现并跑迁移。空 DSN = Memory（显式告警，避免误上生产）。
-func openStore(dsn string) (rule.Store, func(), error) {
+// stores 汇总本进程装配的各个 Store；PG 模式下同一个 *pgstore.Store 满足全部端口。
+type stores struct {
+	rules  rule.Store
+	events event.Store
+}
+
+// openStores 选择持久化实现并跑迁移。空 DSN = Memory（显式告警，避免误上生产）。
+func openStores(dsn string) (stores, func(), error) {
 	if dsn == "" {
 		log.Printf("riskservice: RISK_DATABASE_URL is empty, using in-memory store (non-persistent)")
-		return rule.NewMemory(), func() {}, nil
+		return stores{rules: rule.NewMemory(), events: event.NewMemory()}, func() {}, nil
 	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		return nil, nil, err
+		return stores{}, nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
-		return nil, nil, err
+		return stores{}, nil, err
 	}
 	if err := pgstore.Migrate(ctx, db); err != nil {
 		_ = db.Close()
-		return nil, nil, err
+		return stores{}, nil, err
 	}
 	log.Printf("riskservice: using PostgreSQL store, migrations applied")
-	return pgstore.New(db), func() { _ = db.Close() }, nil
+	st := pgstore.New(db)
+	return stores{rules: st, events: st}, func() { _ = db.Close() }, nil
 }
