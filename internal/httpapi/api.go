@@ -13,7 +13,7 @@ import (
 // MaxBodyBytes 是单个请求体上限。管理面只有小 JSON。
 const MaxBodyBytes = 1 << 20
 
-// Server 是规则真相源的 HTTP 面（4 个规则管理端点）。
+// Server 是规则真相源的 HTTP 面（4 个规则管理端点 + 3 个快照端点）。
 // monitor/* 三端点因 U7 未裁、形状不冻结，不在本切片（docs/ARCHITECTURE.md §9.4 / §9.6）。
 type Server struct {
 	svc *rule.Service
@@ -27,6 +27,11 @@ func New(svc *rule.Service) *Server {
 	s.mux.HandleFunc("GET /api/risk/rules", s.listRules)
 	s.mux.HandleFunc("PUT /api/risk/rules/{id}", s.updateRule)
 	s.mux.HandleFunc("POST /api/risk/rules/{id}/approve", s.approveRule)
+	s.mux.HandleFunc("POST /api/risk/resolve", s.resolve)
+	s.mux.HandleFunc("GET /api/risk/snapshots/{hash}", s.getSnapshot)
+	// bundle 与快照本体同一形状：规则包就是 canonical snapshot JSON，ParseBundle 直接吃
+	//（run 前 1 次，按 hash 缓存永不失效）。
+	s.mux.HandleFunc("GET /api/risk/snapshots/{hash}/bundle", s.getSnapshot)
 	return s
 }
 
@@ -48,6 +53,11 @@ type ruleBody struct {
 type listBody struct {
 	Rules []rule.RuleView `json:"rules"`
 	Count int             `json:"count"`
+}
+
+type resolveBody struct {
+	RiskRulesHash string        `json:"risk_rules_hash"`
+	Snapshot      rule.Snapshot `json:"snapshot"`
 }
 
 func (s *Server) createRule(w http.ResponseWriter, r *http.Request) {
@@ -146,6 +156,31 @@ func (s *Server) listRules(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, listBody{Rules: rules, Count: len(rules)})
 }
 
+// resolve 把 run 前引用解析成快照元数据（钉 hash 或 latest，二选一）。
+func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
+	var req rule.ResolveRequest
+	if err := decodeBody(w, r, &req); err != nil {
+		writeInvalidParams(w, err)
+		return
+	}
+	snap, err := s.svc.Resolve(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resolveBody{RiskRulesHash: snap.RiskRulesHash, Snapshot: snap})
+}
+
+func (s *Server) getSnapshot(w http.ResponseWriter, r *http.Request) {
+	snap, err := s.svc.GetSnapshot(r.Context(), r.PathValue("hash"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	// 强幂等：同一 hash 两次拉取字节一致（json.Marshal 对同一结构确定性编码）。
+	writeJSON(w, http.StatusOK, snap)
+}
+
 // decodeBody 严格解码：拒未知字段、拒尾随内容、限制体积。
 func decodeBody(w http.ResponseWriter, r *http.Request, dst any) error {
 	if r.Body == nil {
@@ -182,6 +217,13 @@ func classify(err error) (int, string) {
 		return http.StatusBadRequest, "invalid_rule_type"
 	case errors.Is(err, rule.ErrInvalidScope), errors.Is(err, rule.ErrInvalidParams):
 		return http.StatusBadRequest, "invalid_params"
+	case errors.Is(err, rule.ErrSnapshotNotFound):
+		return http.StatusNotFound, "snapshot_not_found"
+	case errors.Is(err, rule.ErrNoApprovedRules):
+		return http.StatusNotFound, "no_approved_rules"
+	case errors.Is(err, rule.ErrSnapshotMismatch):
+		// 内容寻址被破坏是服务端事故：500 + 告警（日志），细节不外吐。
+		return http.StatusInternalServerError, "internal"
 	default:
 		return http.StatusInternalServerError, "internal"
 	}

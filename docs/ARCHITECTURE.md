@@ -41,14 +41,16 @@ cmd/
   riskservice/       进程入口：rule.New(Memory Store) + httpapi.New + http.Server（127.0.0.1:8086）
 internal/
   rule/              领域核心：RuleType/Scope/Status 冻结枚举、Revision 校验与参数规范化、
-                      VersionHash、Store 端口 + Memory 实现、Migrations()（7 条幂等 DDL）、
-                      Service（Create / Update / Approve / List / Audit）
-  httpapi/           传输层：标准库 http.ServeMux 的 4 个规则端点 + 严格解码 + wire code 映射
+                      VersionHash、快照内容寻址（Snapshot / SnapshotHash / ParseBundle）、
+                      Store 端口 + Memory 实现、Migrations()（8 条幂等 DDL）、
+                      Service（Create / Update / Approve / List / Audit / Resolve / GetSnapshot）
+  httpapi/           传输层：标准库 http.ServeMux 的 4 个规则端点 + 3 个快照端点 + 严格解码 + wire code 映射
 doc.go               仓级包文档（无代码）
 ```
 
 **依赖方向单一**：`cmd/riskservice` → `internal/httpapi` → `internal/rule`；`internal/rule` 不 import 传输层。
-**未落**：PG Store 与迁移执行入口、快照（X3b）、事件（X3c）、熔断（X3d）、monitor 三端点（U7 未裁）、鉴权。
+**未落**：PG Store 与迁移执行入口、事件（X3c）、熔断（X3d）、monitor 三端点（U7 未裁）、鉴权、
+core 侧 RiskPolicy 消费接线（F3）。
 清单见 `docs/TASKS.md` QT-42 施工记录。
 
 ## 4. 三份契约（功能的边界就在这三份文件里）
@@ -88,7 +90,7 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | X3a | 规则定义 + 版本 + 审批状态机 + 审计 | 🔶 已实装（`internal/rule` + `internal/httpapi` 4 端点，Memory Store）；PG Store / 迁移执行 / 鉴权未落 |
-| X3b | 快照 + `resolve` / `bundle` | ⬜ |
+| X3b | 快照 + `resolve` / `bundle` | 🔶 已实装（2026-10-23：`risk.rule_snapshots` DDL + 快照内容寻址 + `resolve`/`snapshots/{hash}`/`bundle` 三端点 + `rule.ParseBundle` 进程内边界，Memory Store）；PG Store / core 侧消费接线（F3）未落 |
 | X3c | 事件回传 + 监控聚合 | ⬜ |
 | X3d | 熔断指令（幂等） | ⬜ |
 
@@ -127,7 +129,7 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 |---|---|---|---|---|
 | `OrderIntent` | `pkg/risk/interfaces.go:29`：`OrderID`（调用方生成的幂等键）、`RunID`、`Symbol`、`Side`、`OrderType`、`Qty`、`Price`、`Ts`（回测 = 数据时间，实盘 = 墙钟）；`pkg/live/interfaces.go:34` 是别名 | **core-only**（F2）；X3b 只冻结 **wire JSON**（snake_case，字段名如上） | 字段缺失由 `CheckOrder` 判：`OrderID` / `Symbol` 空、`Qty <= 0` ⇒ 拒绝；不允许「缺省放行」 | 加字段 = MINOR，但**位置化字面量会红**（QT-19 ③）；改名 / 删字段 = breaking；JSON tag 改名 = wire breaking |
 | `Verdict` | `pkg/risk/interfaces.go:46`：`Allowed bool` / `Reason string`；零值必须拒绝（`pkg/risk/interfaces_compliance_test.go:115` `TestVerdictFailClosed`） | 同上 | 零值 = 拒绝（**冻结**）；`Allowed=true` 时 `Reason` 可空 | 结构 **frozen**；加字段 = MINOR，且不得把零值变成放行 |
-| `RuleSnapshot`（目标） | **不存在**；`risk.rule_snapshots` 待建（`docs/db-schema.md` §1） | 目标 `tellurion-contracts/risk`（新包，X3b 落；届时应已有 core + 本仓两个使用方） | 解析失败 / hash 不匹配 ⇒ 拒绝开跑（不回落 latest） | 内容寻址：任一规则内容变 ⇒ 新 hash；**hash 算法变更 = 域标签 v2（全历史 hash 作废）**。样板 = `FactorDefinition.VersionHash()`（`pkg/domain/factor_def.go:151`：canonical JSON 的 SHA-256，加载时重新 derive 校验，见 `pkg/storage/factor_definition.go:94-97`） |
+| `RuleSnapshot` | **本仓已实装 wire 形状**（X3b，`internal/rule/snapshot.go`）：`Snapshot{risk_rules_hash, rules[], created_at}`；`risk.rule_snapshots` DDL 已落 | 目标 `tellurion-contracts/risk`（届时应已有 core + 本仓两个使用方） | 解析失败 / hash 不匹配 ⇒ 拒绝开跑（不回落 latest）；`rule.ParseBundle` 双头 derive 校验 | 内容寻址：任一规则内容变 ⇒ 新 hash；**hash 算法变更 = 域标签 v2（全历史 hash 作废）**。样板 = `FactorDefinition.VersionHash()`（`pkg/domain/factor_def.go:151`：canonical JSON 的 SHA-256，加载时重新 derive 校验，见 `pkg/storage/factor_definition.go:94-97`） |
 | `RuleEvent`（目标） | 不存在；`risk.risk_events` 待建；`OrderIntent.RunID` 注释仍指向 `quant.risk_events`（`pkg/risk/interfaces.go:7/31`）——**历史指向**，X3b 落 `risk` 时改注释 | 目标 `tellurion-contracts/risk`（同 `RuleSnapshot`） | 去重键 `run_id + order_id + event_seq`；批量部分失败必须**逐条**报，不许全量 500 / 全量重发 | 加字段 = MINOR；未知字段**不得丢弃**（审计原文进 `payload` JSONB） |
 | `BreakerCommand`（目标） | 不存在；`risk.circuit_orders` 待建 | 同上 | 幂等键 `breaker_id`；同键同载荷 ⇒ `already_applied`；同键不同载荷 ⇒ **409 `idempotency_conflict`**（不许静默成功） | 幂等键语义 frozen；新增动作枚举 = MINOR（旧执行方 fail-closed 拒收未知动作） |
 | `risk_rules_hash`（目标值） | 定义在 `pkg/backtest/contracts/provenance.go:174`，无条件进 canonical（`:216`）；QT-63 已落表与写入路径，但生产者今天写空串（F3） | 已属 contracts（QT-03 冻结域） | 空串 = 未登记；**不得用空串冒充「无风控」** | SHA-256 hex（64 字符）；域标签变更 = breaking |
@@ -144,9 +146,9 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 | `PUT /api/risk/rules/{id}` | `{base_revision, params, description?}` → `200 {rule_id, revision, status:"draft", version_hash}` | `404 rule_not_found`；`409 revision_conflict`（`base_revision` 不是当前 head）；`409 rule_deprecated` | 非幂等（每次产生新 revision）；`base_revision` 防丢更新。改参数语义 = MAJOR / ADR |
 | `POST /api/risk/rules/{id}/approve` | `{revision}` → `200 {rule_id, revision, status:"active", version_hash}` | `404 rule_not_found`；`409 revision_not_draft` | 同 revision 重复批准 → `200` + 同一 `version_hash`（幂等）；状态机之外无第二条路 |
 | `GET /api/risk/rules?scope=&active=true` | → `200 {rules:[{rule_id, revision, status, version_hash}], count}` | `400 invalid_params` | 只读可重试；路径只增不删 |
-| `GET /api/risk/snapshots/{hash}` | → `200 {risk_rules_hash, rules, created_at}` | `404 snapshot_not_found` | 强幂等：同一 hash 两次拉取**字节一致**；缓存按 hash、永不失效 |
-| `POST /api/risk/resolve` | `{hash}` **或** `{ruleset:"latest"}`（二选一）→ `200 {risk_rules_hash, snapshot}` | `400 invalid_params`（两者同时给 / 都不给）；`404 no_approved_rules`；`404 snapshot_not_found`（**不回退 latest**） | 只读可重试；`latest` 只解析到**当前 approved**，不越过审批 |
-| `GET /api/risk/snapshots/{hash}/bundle` | → `200`（canonical snapshot JSON） | `404 snapshot_not_found`；内容重算 hash ≠ 路径 hash ⇒ `500` + 告警（缓存串号） | 强幂等；原地改内容是**绝对禁止项**（内容变 ⇒ 必然是新 hash） |
+| `GET /api/risk/snapshots/{hash}` | → `200 {risk_rules_hash, rules, created_at}` | `404 snapshot_not_found` | 强幂等：同一 hash 两次拉取**字节一致**；缓存按 hash、永不失效。✅ 已实装（X3b） |
+| `POST /api/risk/resolve` | `{hash}` **或** `{ruleset:"latest"}`（二选一）→ `200 {risk_rules_hash, snapshot}` | `400 invalid_params`（两者同时给 / 都不给）；`404 no_approved_rules`；`404 snapshot_not_found`（**不回退 latest**） | 只读可重试；`latest` 只解析到**当前 approved**，不越过审批。✅ 已实装（X3b） |
+| `GET /api/risk/snapshots/{hash}/bundle` | → `200`（canonical snapshot JSON） | `404 snapshot_not_found`；内容重算 hash ≠ 路径 hash ⇒ `500` + 告警（缓存串号） | 强幂等；原地改内容是**绝对禁止项**（内容变 ⇒ 必然是新 hash）。✅ 已实装（X3b；`rule.ParseBundle` 双头 derive 校验） |
 | `POST /api/risk/events` | `{events:[RuleEvent...]}` → `200 {accepted, duplicates}` 或 `207 {accepted, duplicates, failed:[{index, code, message}]}` | `400 invalid_params`（整批不可解析）；`207 partial_failure`（逐条） | 去重键 `run_id + order_id + event_seq`；重试只重发 `failed`。加字段 = MINOR |
 | `POST /api/risk/breakers` | `{breaker_id, action, scope, reason, ts}` → `200 {breaker_id, status:"applied"\|"already_applied"}` | `400 invalid_params`（未知 action / scope）；`409 idempotency_conflict`（同键不同载荷） | 幂等键 `breaker_id`；同键同载荷 → `already_applied`（视为成功） |
 | `GET /api/risk/monitor/exposure` | ⛔ **F5 / U7 未裁，形状不冻结** | — | 今天 core 的对应面不是它：`/api/compliance/*` + `/api/alerts/*`（`cmd/analysis/handlers_compliance.go:94-104`、`cmd/analysis/handlers_alert.go:138-142`）；迁移边界等 U7 |
@@ -157,7 +159,7 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 
 | 写入点 | 今天 | 目标口径 | 幂等 / 失败语义 |
 |---|---|---|---|
-| `risk.rule_snapshots` | 待建 | 内容寻址、不可变；写入时以重新 derive 的 hash 为准（样板 `pkg/storage/factor_definition.go:94-97`：库里存的 hash 与 derive 值不符即拒） | 同 hash 重复写入 = no-op；同 hash 不同内容 = **fail-loud**（不许 `ON CONFLICT DO NOTHING` 吞掉） |
+| `risk.rule_snapshots` | 🔶 已实装（X3b）：Memory Store 读写 + DDL 已落（执行入口未接）；写入 / 读取 / ParseBundle 三处重新 derive hash 校验 | 内容寻址、不可变；写入时以重新 derive 的 hash 为准（样板 `pkg/storage/factor_definition.go:94-97`：库里存的 hash 与 derive 值不符即拒） | 同 hash 重复写入 = no-op；同 hash 不同内容 = **fail-loud**（不许 `ON CONFLICT DO NOTHING` 吞掉） |
 | `risk.risk_events` | 待建；`OrderIntent` 注释指向 `quant.risk_events`（`pkg/risk/interfaces.go:7/31`） | 唯一 owner = 本仓；去重键 `(run_id, order_id, event_seq)` | 事件回传允许延迟、**不允许丢**；部分失败 → `207` + 逐条明细 |
 | `risk.circuit_orders` | 待建 | `breaker_id` UNIQUE；记录下发与执行状态 | 同键同载荷 → `already_applied`；同键不同载荷 → `409` |
 | `risk.audit_logs` | 待建（**新表**） | 规则 / 审批 / 熔断的人操作留痕 | **不迁、不复用** core 的 `audit_logs`：后者是 ADR-017 鉴权访问审计（`pkg/storage/postgres.go:335` DDL、`pkg/auth/auth.go:492` `RecordAudit` 写入），语义不同（`docs/db-schema.md` §1 注） |

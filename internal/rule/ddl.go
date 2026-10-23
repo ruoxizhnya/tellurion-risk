@@ -51,6 +51,14 @@ var migrationStatements = []string{
 
 	`CREATE INDEX IF NOT EXISTS audit_logs_rule_idx
 		ON risk.audit_logs (rule_id, seq)`,
+
+	// rule_snapshots 是 run 前下发的规则快照（内容寻址；回测结果记 risk_rules_hash）。
+	// 同 hash 重复写 = no-op，同 hash 不同内容 = fail-loud（应用层双头 derive 校验）。
+	`CREATE TABLE IF NOT EXISTS risk.rule_snapshots (
+		risk_rules_hash CHAR(64) PRIMARY KEY CHECK (risk_rules_hash ~ '^[0-9a-f]{64}$'),
+		rules           JSONB NOT NULL CHECK (jsonb_typeof(rules) = 'array' AND jsonb_array_length(rules) > 0),
+		created_at      TIMESTAMPTZ NOT NULL
+	)`,
 }
 
 // Migrations 返回迁移语句的副本（调用方不能改到内部数组）。

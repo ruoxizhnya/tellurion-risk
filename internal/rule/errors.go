@@ -20,4 +20,10 @@ var (
 	ErrInvalidScope = errors.New("scope is not in the frozen enum")
 	// ErrInvalidParams 参数不是合法 JSON 对象、为空或超限。
 	ErrInvalidParams = errors.New("rule params are invalid")
+	// ErrSnapshotNotFound 快照不存在（resolve 钉住 hash 时不回退 latest）。
+	ErrSnapshotNotFound = errors.New("rule snapshot not found")
+	// ErrNoApprovedRules 没有任何生效规则：run 拒绝启动，不许用默认限额。
+	ErrNoApprovedRules = errors.New("no approved rules")
+	// ErrSnapshotMismatch 内容寻址被破坏：derive hash ≠ 声称 hash，或同 hash 不同内容。fail-loud，不吞。
+	ErrSnapshotMismatch = errors.New("snapshot hash does not match content")
 )

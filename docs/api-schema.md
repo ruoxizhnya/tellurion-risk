@@ -6,10 +6,12 @@ verified-by: QT-42 规则侧实装（internal/rule + internal/httpapi 4 端点�
 
 # API Schema — tellurion-risk
 
-> **实现状态（2026-10-23）**：**规则管理 4 端点已落地**（`POST /rules`、`PUT /rules/{id}`、`POST /rules/{id}/approve`、
-> `GET /rules`），实现在 `internal/rule`，传输在 `internal/httpapi`（标准库 `net/http`，不是 gin），跑在 `Memory` Store 上。
-> **未落地**：`GET /snapshots/{hash}` / `POST /resolve` / `GET /snapshots/{hash}/bundle`（X3b 快照）、
-> `POST /events`（X3c）、`POST /breakers`（X3d）、`monitor/*` 三端点（U7 未裁、形状不冻结）、PG Store 与迁移执行入口、鉴权（QT-50 ④）。
+> **实现状态（2026-10-23）**：**规则管理 4 端点 + 快照 3 端点已落地**（`POST /rules`、`PUT /rules/{id}`、
+> `POST /rules/{id}/approve`、`GET /rules`、`POST /resolve`、`GET /snapshots/{hash}`、`GET /snapshots/{hash}/bundle`），
+> 实现在 `internal/rule`（快照内容寻址 + `ParseBundle` 进程内边界），传输在 `internal/httpapi`
+> （标准库 `net/http`，不是 gin），跑在 `Memory` Store 上。
+> **未落地**：`POST /events`（X3c）、`POST /breakers`（X3d）、`monitor/*` 三端点（U7 未裁、形状不冻结）、
+> PG Store 与迁移执行入口、鉴权（QT-50 ④）、core 侧消费接线（run 的 `risk_rules_hash` 生产者仍写空串，F3）。
 > 未落项逐条登记在 `docs/TASKS.md` QT-42 施工记录。
 >
 > 本文件是**目标契约 + 现状**：已实现的行以代码为准，未实现的行是欠账，不允许把欠账当现状描述。
@@ -29,14 +31,14 @@ verified-by: QT-42 规则侧实装（internal/rule + internal/httpapi 4 端点�
 | PUT | `/api/risk/rules/{id}` | 改规则 → 生成新 revision（draft） | ✅ |
 | POST | `/api/risk/rules/{id}/approve` | 审批激活（draft → approved → active） | ✅ |
 | GET | `/api/risk/rules?scope=&active=true` | 查询（列表项 = head revision 摘要） | ✅ |
-| GET | `/api/risk/snapshots/{hash}` | 取规则快照 | ⛔ X3b |
 
-### 运行接入（读侧，内核 / 实盘）
+### 运行接入（读侧，内核 / 实盘）—— 快照三端点 ✅ 已实现（2026-10-23，X3b）
 
-| 方法 | 路径 | 用途 |
-|---|---|---|
-| POST | `/api/risk/resolve` | 规则集引用（锁定 hash 或 latest）→ 快照元数据 — ⛔ X3b |
-| GET | `/api/risk/snapshots/{hash}/bundle` | 拉规则包（run 前 1 次，按 hash 缓存永不失效）— ⛔ X3b |
+| 方法 | 路径 | 用途 | 现状 |
+|---|---|---|---|
+| POST | `/api/risk/resolve` | 规则集引用（锁定 hash 或 latest，二选一）→ 快照元数据 `{risk_rules_hash, snapshot}` | ✅ |
+| GET | `/api/risk/snapshots/{hash}` | 取规则快照（同一 hash 两次拉取**字节一致**；按 hash 缓存永不失效） | ✅ |
+| GET | `/api/risk/snapshots/{hash}/bundle` | 拉规则包（run 前 1 次；body = canonical snapshot JSON，`rule.ParseBundle` 直接吃） | ✅ |
 | POST | `/api/risk/events` | 回传裁决事件（异步批量，**非热路径**）— ⛔ X3c |
 | POST | `/api/risk/breakers` | 下发熔断指令（幂等键）— ⛔ X3d |
 
@@ -68,8 +70,8 @@ verified-by: QT-42 规则侧实装（internal/rule + internal/httpapi 4 端点�
 | 编辑已废弃规则 | 409 `rule_deprecated` | ⛔ **本切片不产生**（见下注） |
 | 审批的 revision 不是 draft | 409 `revision_not_draft` | 不重试 |
 | revision 不存在 | 404 `revision_not_found` | 不重试 |
-| 无 approved 版本 | 404 `no_approved_rules` — ⛔ X3b | run 前拒绝启动 |
-| 规则 hash 不存在 | 404 `snapshot_not_found` — ⛔ X3b | 拒绝（不回退 latest） |
+| 无 approved 版本 | 404 `no_approved_rules` — ✅ | run 前拒绝启动 |
+| 规则 hash 不存在 | 404 `snapshot_not_found` — ✅ | 拒绝（不回退 latest） |
 | 熔断指令重复（同键同载荷） | 200 + `already_applied` — ⛔ X3d | 视为成功（幂等） |
 | 事件批量部分失败 | 207 + `partial_failure` + 失败明细 — ⛔ X3c | 重试失败项，不重发全量 |
 | 其它 | 500 `internal`（**不吐内部原文**） | 服务端问题 |

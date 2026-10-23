@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -298,6 +299,87 @@ func (s *Service) List(ctx context.Context, f Filter) ([]RuleView, error) {
 		})
 	}
 	return out, nil
+}
+
+// RulesetLatest 是 resolve 的唯一合法 ruleset 取值：只解析到当前生效集，不越过审批。
+const RulesetLatest = "latest"
+
+// ResolveRequest 是 run 前的规则集解析：`hash`（钉住历史快照）或 `ruleset:"latest"`
+// （当前 active 集）**二选一**（docs/api-schema.md §2）。
+type ResolveRequest struct {
+	Hash    string `json:"hash"`
+	Ruleset string `json:"ruleset"`
+}
+
+// Resolve 把 run 前引用解析成快照。
+//
+//   - pinned hash：按 hash 取；不存在 → ErrSnapshotNotFound，**不回退 latest**
+//     （拿不到就拒绝开跑，不许用「现在生效的」顶替「当初锁定的」）。
+//   - latest：从当前 active revisions 构建快照（内容寻址，active 集没变 ⇒ 同 hash，写入幂等）；
+//     没有任何生效规则 → ErrNoApprovedRules（拒绝启动，不许用默认限额）。
+func (s *Service) Resolve(ctx context.Context, req ResolveRequest) (Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	hash, ruleset := strings.TrimSpace(req.Hash), strings.TrimSpace(req.Ruleset)
+	switch {
+	case hash != "" && ruleset != "":
+		return Snapshot{}, fmt.Errorf("%w: hash and ruleset are mutually exclusive", ErrInvalidParams)
+	case hash != "":
+		return s.store.GetSnapshot(ctx, hash)
+	case ruleset == RulesetLatest:
+		return s.resolveLatestLocked(ctx)
+	case ruleset != "":
+		return Snapshot{}, fmt.Errorf("%w: ruleset must be %q", ErrInvalidParams, RulesetLatest)
+	default:
+		return Snapshot{}, fmt.Errorf("%w: exactly one of hash or ruleset=latest is required", ErrInvalidParams)
+	}
+}
+
+// GetSnapshot 按 hash 取历史快照（`/snapshots/{hash}` 与 `/bundle` 的共同读路径）。
+func (s *Service) GetSnapshot(ctx context.Context, hash string) (Snapshot, error) {
+	return s.store.GetSnapshot(ctx, hash)
+}
+
+// resolveLatestLocked 把当前 active revisions 收进一份快照并按内容寻址落库。
+// 调用方必须已持有 s.mu（latest 解析路径要写）。
+func (s *Service) resolveLatestLocked(ctx context.Context) (Snapshot, error) {
+	defs, err := s.store.ListDefinitions(ctx, Filter{Active: true})
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if len(defs) == 0 {
+		return Snapshot{}, fmt.Errorf("%w: run must not start with default limits", ErrNoApprovedRules)
+	}
+	rules := make([]SnapshotRule, 0, len(defs))
+	for _, def := range defs {
+		rev, err := s.store.GetRevision(ctx, def.RuleID, def.ActiveRevision)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		// 不变量：能进快照的只有 active revision（draft / deprecated 到达这里 = 状态机被破坏）。
+		if rev.Status != StatusActive {
+			return Snapshot{}, fmt.Errorf("rule: %s@%d listed active but status is %s",
+				rev.RuleID, rev.Revision, rev.Status)
+		}
+		rules = append(rules, SnapshotRule{
+			RuleID:      rev.RuleID,
+			Revision:    rev.Revision,
+			Scope:       rev.Scope,
+			Type:        rev.Type,
+			Params:      append(json.RawMessage(nil), rev.Params...),
+			VersionHash: rev.VersionHash,
+		})
+	}
+	hash, err := SnapshotHash(rules)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snap := Snapshot{RiskRulesHash: hash, Rules: rules, CreatedAt: s.now().UTC()}
+	if err := s.store.PutSnapshot(ctx, snap); err != nil {
+		return Snapshot{}, err
+	}
+	return snap, nil
 }
 
 // Audit 返回某条规则的审计（写操作必留痕；actor 待 QT-50 ④ 鉴权面落地后才有值）。

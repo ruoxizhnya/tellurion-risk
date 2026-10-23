@@ -1,8 +1,10 @@
 package rule
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"sync"
 )
@@ -25,6 +27,11 @@ type Store interface {
 	PutRevision(ctx context.Context, rev Revision) error
 	AppendAudit(ctx context.Context, entry AuditEntry) (int64, error)
 	ListAudit(ctx context.Context, ruleID string) ([]AuditEntry, error)
+	// PutSnapshot 落快照（内容寻址）：写入前重新 derive hash 校验；同 hash 重复写 = no-op，
+	// 同 hash 不同内容 = ErrSnapshotMismatch（fail-loud，不许静默覆盖）。
+	PutSnapshot(ctx context.Context, snap Snapshot) error
+	// GetSnapshot 按 hash 取快照；读取时同样重新 derive 校验（两头都有牙）。
+	GetSnapshot(ctx context.Context, hash string) (Snapshot, error)
 }
 
 // Memory 是进程内 Store。低频率的管理操作，单锁足够；不作为生产持久化。
@@ -35,6 +42,7 @@ type Memory struct {
 	audit       []AuditEntry
 	auditSeq    int64
 	auditByRule map[string][]int64
+	snapshots   map[string]Snapshot
 }
 
 // NewMemory 构造空的内存 Store。
@@ -43,6 +51,7 @@ func NewMemory() *Memory {
 		defs:        make(map[string]Definition),
 		revisions:   make(map[string]map[int]Revision),
 		auditByRule: make(map[string][]int64),
+		snapshots:   make(map[string]Snapshot),
 	}
 }
 
@@ -177,4 +186,61 @@ func (m *Memory) ListAudit(_ context.Context, ruleID string) ([]AuditEntry, erro
 		out = append(out, entry)
 	}
 	return out, nil
+}
+
+// PutSnapshot 落快照：先重 derive 校验，再按 hash 幂等写（同内容 no-op，同 hash 异内容 fail-loud）。
+func (m *Memory) PutSnapshot(_ context.Context, snap Snapshot) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := verifyHash(snap.RiskRulesHash, snap.Rules); err != nil {
+		return err
+	}
+	if existing, ok := m.snapshots[snap.RiskRulesHash]; ok {
+		if !sameSnapshotRules(existing.Rules, snap.Rules) {
+			return fmt.Errorf("%w: hash %s already stored with different content",
+				ErrSnapshotMismatch, snap.RiskRulesHash)
+		}
+		return nil
+	}
+	m.snapshots[snap.RiskRulesHash] = snap.Clone()
+	return nil
+}
+
+// GetSnapshot 按 hash 取快照，读取时重新 derive 校验。
+func (m *Memory) GetSnapshot(_ context.Context, hash string) (Snapshot, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	snap, ok := m.snapshots[hash]
+	if !ok {
+		return Snapshot{}, ErrSnapshotNotFound
+	}
+	if err := verifyHash(snap.RiskRulesHash, snap.Rules); err != nil {
+		return Snapshot{}, err
+	}
+	return snap.Clone(), nil
+}
+
+// sameSnapshotRules 逐条比对规则内容（params 走 canonical，键序 / 空白不参与）。
+func sameSnapshotRules(a, b []SnapshotRule) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].RuleID != b[i].RuleID || a[i].Revision != b[i].Revision ||
+			a[i].Scope != b[i].Scope || a[i].Type != b[i].Type || a[i].VersionHash != b[i].VersionHash {
+			return false
+		}
+		pa, err := canonicalParams(a[i].Params)
+		if err != nil {
+			return false
+		}
+		pb, err := canonicalParams(b[i].Params)
+		if err != nil {
+			return false
+		}
+		if !bytes.Equal(pa, pb) {
+			return false
+		}
+	}
+	return true
 }

@@ -6,10 +6,13 @@
 
 风控规则的**真相源**：规则定义、限额表、聚合监控与熔断。**同步裁决（`RiskPolicy`）留在 core 进程内**。
 
-**状态**：🔶 首批实装（QT-42 X3a 规则侧：规则定义 / 版本 / 审批 / 审计）。快照、事件、熔断、监控尚未落地。
+**状态**：🔶 首批实装（QT-42 X3a 规则侧 + X3b 快照侧）。规则定义 / 版本 / 审批 / 审计 + 快照内容寻址 /
+`resolve` / `snapshots/{hash}` / `bundle` 三端点 / 进程内 `ParseBundle` 边界。事件（X3c）、熔断（X3d）、监控（U7 未裁）尚未落地。
 
-**本仓今天的实现**（`internal/rule` / `internal/httpapi` / `cmd/riskservice`）：规则 4 端点 + 审批状态机 + 内容寻址 `version_hash` + 审计；
-持久化只有 `Memory` Store，PG DDL 在 `internal/rule/ddl.go` 但**执行入口未接**。
+**本仓今天的实现**（`internal/rule` / `internal/httpapi` / `cmd/riskservice`）：规则 4 端点 + 快照 3 端点 +
+审批状态机 + 内容寻址 `version_hash` / `risk_rules_hash` + 审计 + `ParseBundle`（进程内 RiskPolicy 输入形状）；
+持久化只有 `Memory` Store，PG DDL 在 `internal/rule/ddl.go` 但**执行入口未接**；
+core 侧消费接线未做（run 的 `risk_rules_hash` 生产者仍写空串，F3）。
 
 **留在 core 的实现**：`core:pkg/risk`（`RiskManager` / `RegimeDetector` / `StopLossChecker` / `CheckOrder`）+ `core:pkg/compliance`（异常交易 / 减持 / 大额报送）+ `core:pkg/alert`（6 检测器 + 通道）。
 

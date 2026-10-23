@@ -16,7 +16,7 @@ verified-by: QT-42 规则侧实装——DDL 与 internal/rule/ddl.go 逐表对�
 |---|---|---|
 | `risk.rule_defs` | 规则定义（类型 / 参数归属 / 适用范围），`head_revision` 指向当前 head，`active_revision` 指向生效版本 | 🔶 DDL 已落（`internal/rule/ddl.go`），执行入口未接 |
 | `risk.rule_revisions` | 版本追加 + 审批状态（draft→approved→active→deprecated）+ `version_hash` | 🔶 同上 |
-| `risk.rule_snapshots` | run 前下发的规则快照（内容寻址；回测结果记 `risk_rules_hash`） | ⬜ X3b |
+| `risk.rule_snapshots` | run 前下发的规则快照（内容寻址；回测结果记 `risk_rules_hash`） | 🔶 DDL 已落 + Memory 读写（`internal/rule/snapshot.go` / `store.go`），执行入口未接 |
 | `risk.limits` | 账户 / 策略 / 标的级限额 | ⬜ |
 | `risk.risk_events` | 裁决事件留痕（`OrderIntent` 注释已指向 `quant.risk_events`，**表未建**） | ⬜ X3c，迁入 `risk` |
 | `risk.circuit_orders` | 熔断指令下发记录（幂等） | ⬜ X3d |
@@ -29,6 +29,11 @@ verified-by: QT-42 规则侧实装——DDL 与 internal/rule/ddl.go 逐表对�
 - `rule_revisions`：`PRIMARY KEY (rule_id, revision)` + `UNIQUE (rule_id, version_hash)`；
   `CHECK ((status IN ('approved','active','deprecated')) = (approved_at IS NOT NULL))` —— 未批准过的 revision 不得带批准时间。
 - `audit_logs`：`seq BIGSERIAL PRIMARY KEY`；`action CHECK IN ('create','update','approve','deprecate')`；**不设更新路径**（只追加）。
+- `rule_snapshots`：`PRIMARY KEY (risk_rules_hash)`；
+  `CHECK (risk_rules_hash ~ '^[0-9a-f]{64}$')`；
+  `CHECK (jsonb_typeof(rules) = 'array' AND jsonb_array_length(rules) > 0)` —— 快照至少含一条生效规则。
+  应用层双头护栏：写入与读取都重新 derive hash 比对（`ErrSnapshotMismatch` fail-loud）；
+  同 hash 重复写 = no-op，同 hash 不同内容 = 拒收（不许静默覆盖，docs/ARCHITECTURE.md §9.5）。
 - `version_hash` 由 `rule_id + revision + scope + type + 规范化 params` 派生（域 `tellurion.risk_rule_version_hash.v1`），
   不含 `description` / `status` / 时间（见 `docs/adr/0002-规则版本-hash-与审批状态机的裁决.md`）。
 
@@ -83,6 +88,9 @@ verified-by: QT-42 规则侧实装——DDL 与 internal/rule/ddl.go 逐表对�
   （API 列表的 `status` 取 head revision 的状态）。裁决落 `docs/adr/0002-规则版本-hash-与审批状态机的裁决.md`。
 - **`version_hash` 域（2026-10-23）**：`tellurion.risk_rule_version_hash.v1`，本仓暂为唯一 owner
   （contracts 的 canonical 域表没有 risk 域）。
+- **`risk_rules_hash` 域（2026-10-23，X3b）**：`tellurion.risk_snapshot_hash.v1`，同样本仓暂为唯一 owner。
+  由**排序后的 active revision 内容**（rule_id / revision / scope / type / 规范化 params / version_hash）派生，
+  **不含 `created_at`**——同一内容永远同一 hash，缓存按 hash 永不失效；hash 算法变更 = 域标签 v2，全历史作废。
 - **审计表不复用 core 的 `audit_logs`（2026-10-23）**：`risk.audit_logs` 是新表，只记人与规则/审批的操作；
   core 的 `audit_logs` 是 ADR-017 鉴权访问审计，两者语义不同，不做迁移合并。
 
