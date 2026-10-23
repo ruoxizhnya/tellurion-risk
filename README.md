@@ -1,6 +1,6 @@
 # tellurion-risk
 
-> module: `tellurion-risk` ｜ 状态：**预留（S0 占位，触发式启动）——尚未启动，无实现**
+> module: `tellurion-risk` ｜ 状态：**🔶 首批实装（QT-42 X3a 规则侧）——规则定义 / 版本 / 审批 / 审计已落地；快照、事件、熔断、监控未实现**
 
 风控规则的**真相源**：规则定义、限额表、聚合监控与熔断。**同步裁决（`RiskPolicy`）留在 core 进程内**。
 
@@ -8,9 +8,12 @@
 
 | 路径 | 内容 |
 |---|---|
+| `cmd/riskservice/` | HTTP 服务入口（默认 `127.0.0.1:8086`，当前用 `Memory` Store） |
+| `internal/rule/` | 规则领域：冻结枚举、`version_hash`、Store 端口 + `Memory`、DDL、`Service`（状态机 + 审计） |
+| `internal/httpapi/` | 4 个规则端点 + 严格解码 + 错误码映射（标准库 `net/http`） |
 | `docs/` | 本仓文档：台账 / 边界 / 决策 / 归档 —— 从这里进：`docs/README.md` |
 | `AGENTS.md` | 本仓入口（构建、边界、禁止、依赖版本） |
-| `doc.go` | 占位包（无实现） |
+| `doc.go` | 仓级文档锚点（无实现代码） |
 
 ## 快速开始
 
@@ -19,6 +22,14 @@ go build ./...
 go vet ./...
 go test ./...
 ```
+
+起服务：
+
+```bash
+go run ./cmd/riskservice -addr 127.0.0.1:8086
+```
+
+`POST /api/risk/rules` → `PUT /api/risk/rules/{id}` → `POST /api/risk/rules/{id}/approve` → `GET /api/risk/rules?scope=&active=`。
 
 本仓**单独 checkout 就能跑通**上面三条。需要别的仓源码才过 → 边界错了，不是加 `replace` 能解决的问题。
 

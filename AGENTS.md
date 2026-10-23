@@ -6,9 +6,12 @@
 
 风控规则的**真相源**：规则定义、限额表、聚合监控与熔断。**同步裁决（`RiskPolicy`）留在 core 进程内**。
 
-**状态**：预留（S0 占位，触发式启动）——尚未启动，无实现
+**状态**：🔶 首批实装（QT-42 X3a 规则侧：规则定义 / 版本 / 审批 / 审计）。快照、事件、熔断、监控尚未落地。
 
-**今天的实现**：`core:pkg/risk`（`RiskManager` / `RegimeDetector` / `StopLossChecker` / `CheckOrder`）+ `core:pkg/compliance`（异常交易 / 减持 / 大额报送）+ `core:pkg/alert`（6 检测器 + 通道）+ `quant.risk_events` / `audit_logs` 表。
+**本仓今天的实现**（`internal/rule` / `internal/httpapi` / `cmd/riskservice`）：规则 4 端点 + 审批状态机 + 内容寻址 `version_hash` + 审计；
+持久化只有 `Memory` Store，PG DDL 在 `internal/rule/ddl.go` 但**执行入口未接**。
+
+**留在 core 的实现**：`core:pkg/risk`（`RiskManager` / `RegimeDetector` / `StopLossChecker` / `CheckOrder`）+ `core:pkg/compliance`（异常交易 / 减持 / 大额报送）+ `core:pkg/alert`（6 检测器 + 通道）。
 
 ## 2. 构建 / 测试（必须单仓可跑）
 
@@ -46,8 +49,8 @@ go test ./...
 
 | 依赖 | 版本 | 说明 |
 |---|---|---|
-| `github.com/ruoxizhnya/tellurion-contracts` | 待定（S2 后 `v0.1.0`） | `RiskPolicy` 相关 DTO 只认契约 |
-| `github.com/ruoxizhnya/tellurion-kit` | 待定（S2 后 `v0.1.0`） | 日志 / HTTP / 存储连接 |
+| `github.com/ruoxizhnya/tellurion-contracts` | 未引入（`v0.1.0` 已发 tag） | `RiskPolicy` 相关 DTO 只认契约；当前规则侧零跨仓依赖，接入时 pin tag 不 pin 伪版本 |
+| `github.com/ruoxizhnya/tellurion-kit` | 未引入（`v0.1.0` 已发 tag） | 日志 / HTTP / 存储连接；HTTP 暂用标准库 `net/http` |
 
 > 跨仓依赖**只认版本号**（伪版本或 tag），不认源码路径。契约变更走 `tellurion-contracts` 的发布，不走"顺手改一下"。
 

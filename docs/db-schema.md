@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-20
-verified-by: 功能边界固化（三份契约：db / api / dataflow）
+last-verified: 2026-10-23
+verified-by: QT-42 规则侧实装——DDL 与 internal/rule/ddl.go 逐表对表
 ---
 
 # DB Schema — tellurion-risk
@@ -14,13 +14,23 @@ verified-by: 功能边界固化（三份契约：db / api / dataflow）
 
 | 表 | 内容 | 现状 |
 |---|---|---|
-| `risk.rule_defs` | 规则定义（类型 / 参数 / 适用范围），带 `version_hash` | 待建（沿用 `factor_definitions.version_hash` 样板） |
-| `risk.rule_revisions` | 版本追加 + 审批状态（draft→approved→active→deprecated） | 待建 |
-| `risk.rule_snapshots` | run 前下发的规则快照（内容寻址；回测结果记 `risk_rules_hash`） | 待建 |
-| `risk.limits` | 账户 / 策略 / 标的级限额 | 待建 |
-| `risk.risk_events` | 裁决事件留痕（`OrderIntent` 注释已指向 `quant.risk_events`，**表未建**） | 待建，迁入 `risk` |
-| `risk.circuit_orders` | 熔断指令下发记录（幂等） | 待建 |
-| `risk.audit_logs` | **规则与审批的操作审计**（谁改了哪条规则、谁批的） | 待建（**新表**，与现 `audit_logs` 无关、不复用——后者是 ADR-017 鉴权访问审计（`tellurion:pkg/auth` 写入），留 core） |
+| `risk.rule_defs` | 规则定义（类型 / 参数归属 / 适用范围），`head_revision` 指向当前 head，`active_revision` 指向生效版本 | 🔶 DDL 已落（`internal/rule/ddl.go`），执行入口未接 |
+| `risk.rule_revisions` | 版本追加 + 审批状态（draft→approved→active→deprecated）+ `version_hash` | 🔶 同上 |
+| `risk.rule_snapshots` | run 前下发的规则快照（内容寻址；回测结果记 `risk_rules_hash`） | ⬜ X3b |
+| `risk.limits` | 账户 / 策略 / 标的级限额 | ⬜ |
+| `risk.risk_events` | 裁决事件留痕（`OrderIntent` 注释已指向 `quant.risk_events`，**表未建**） | ⬜ X3c，迁入 `risk` |
+| `risk.circuit_orders` | 熔断指令下发记录（幂等） | ⬜ X3d |
+| `risk.audit_logs` | **规则与审批的操作审计**（谁改了哪条规则、谁批的） | 🔶 DDL 已落（**新表**，与现 `audit_logs` 无关、不复用——后者是 ADR-017 鉴权访问审计（`tellurion:pkg/auth` 写入），留 core） |
+
+**约束（2026-10-23 落地）**：
+
+- `rule_defs`：`PRIMARY KEY (rule_id)`；`CHECK (scope IN (...))` / `CHECK (type IN (...))` 与 Go 侧冻结枚举**同源**；
+  `CHECK ((status = 'active') = (active_revision IS NOT NULL))` —— 定义级 status 只表达「有没有生效 revision」。
+- `rule_revisions`：`PRIMARY KEY (rule_id, revision)` + `UNIQUE (rule_id, version_hash)`；
+  `CHECK ((status IN ('approved','active','deprecated')) = (approved_at IS NOT NULL))` —— 未批准过的 revision 不得带批准时间。
+- `audit_logs`：`seq BIGSERIAL PRIMARY KEY`；`action CHECK IN ('create','update','approve','deprecate')`；**不设更新路径**（只追加）。
+- `version_hash` 由 `rule_id + revision + scope + type + 规范化 params` 派生（域 `tellurion.risk_rule_version_hash.v1`），
+  不含 `description` / `status` / 时间（见 `docs/adr/0002-规则版本-hash-与审批状态机的裁决.md`）。
 
 **红线**：`risk` schema 只有本仓能写；内核与实盘只经 port 读快照、经端口回传事件。
 
@@ -53,16 +63,32 @@ verified-by: 功能边界固化（三份契约：db / api / dataflow）
 
 **本仓约定**（从建仓第一天执行）：
 
-- 迁移文件只放 `migrations/`，命名 `<序号>_<动作>.sql`，**本仓内**递增（不与别的仓共享序列，也不复用号）。
-- **执行机制随第一个建表单定，二选一（不能"都不选"）**：
-  1. **core 式**：Go 里的 `migrationStatements()` 数组 + 启动执行，幂等、无版本表——与 core 一致、运维零新增；
-  2. **版本化**：引入迁移库 + `schema_migrations` 表（可 down、有执行记录）——服务变多后更稳，但要一次性 baseline。
-  **取向**：X1~X3 期间优先 ①（少一层依赖），服务数 ≥3 或出现"必须先降级"的需求时重估 ②。
+- **执行机制已定（取向 ①，2026-10-23）**：Go 数组 + 启动执行、幂等、无版本表 —— 语句本体在
+  `internal/rule/ddl.go` 的 `migrationStatements`，由 `rule.Migrations()` 交出副本。
+  **迁移执行入口（PG 连接 + 启动时跑）与 PG Store 尚未接线**（当前只有 `Memory` Store；登记在 `docs/TASKS.md` QT-42 未落项）。
+  取向 ② 的重估条件不变（服务数 ≥3 或出现"必须先降级"需求）。
+- 不另建 `migrations/*.sql`：本仓 DDL 的唯一真相是 `internal/rule/ddl.go` 的 Go 数组；`.sql` 会把真相劈成两份。
+  （本节原先的「迁移文件只放 `migrations/`」随取向 ① 作废。）
 - **只前滚**：已合并的迁移不改；修错靠新增一条。
 - 每条必须可重入（`IF NOT EXISTS` / `IF EXISTS`），且能在空库上一次跑完。
 - 跨 schema 取数只走**只读视图或 API**；出现 `join` 别人的表就是边界腐化的第一信号。
 - 结构变更的同步义务：本文件 + `docs/ARCHITECTURE.md` 的「数据归属」节必须同一次提交里更新。
 
-## 5. 待定
+## 5. 已裁决
 
-- `risk_events` 的写入路径（服务侧异步收集 vs 内核回调）未定稿，见 design §4 与 ADR-D20。
+- **迁移取向 ①（2026-10-23）**：Go 数组 + 启动执行、幂等、无版本表（见 §4）。
+- **rule_defs 双指针（2026-10-23）**：`head_revision`（编辑头）+ `active_revision`（生效版本）分开存。
+  新建 draft 修订**不清空** `active_revision`：runtime 仍应拿到当前生效版本，直到新版本被批准。
+  定义级 `status` 因此只表达「有没有生效 revision」（`active` / `draft`），**head 自身的 draft/active 由 revision 行表达**
+  （API 列表的 `status` 取 head revision 的状态）。裁决落 `docs/adr/0002-规则版本-hash-与审批状态机的裁决.md`。
+- **`version_hash` 域（2026-10-23）**：`tellurion.risk_rule_version_hash.v1`，本仓暂为唯一 owner
+  （contracts 的 canonical 域表没有 risk 域）。
+- **审计表不复用 core 的 `audit_logs`（2026-10-23）**：`risk.audit_logs` 是新表，只记人与规则/审批的操作；
+  core 的 `audit_logs` 是 ADR-017 鉴权访问审计，两者语义不同，不做迁移合并。
+
+## 6. 待定
+
+- `risk_events` 的写入路径（服务侧异步收集 vs 内核回调）未定稿，见 design §4 与 ADR-D20（R2）。
+- **审计 actor 来源**：鉴权面（QT-50 ④）未落，当前审计 `actor` 为空串；角色矩阵与 actor 注入方式随 QT-50 定（R4）。
+- **PG 实现的事务边界**：Service 用进程内锁串行「读-改-写」；接 PG 后这把锁必须换成事务，
+  否则两个进程并发写同一 rule_id 会丢更新（登记为 QT-42 未落项）。

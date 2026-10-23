@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-22
-verified-by: M8 接口对表（QT-42 前置 ②）
+last-verified: 2026-10-23
+verified-by: QT-42 X3a 规则侧实装——文档导航与变更触发表核对
 ---
 
 # 文档导航 — tellurion-risk

@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-22
-verified-by: M8 接口对表（QT-42 前置 ②）
+last-verified: 2026-10-23
+verified-by: QT-42 规则侧实装包布局（internal/rule · internal/httpapi · cmd/riskservice）
 ---
 
 # 架构 — tellurion-risk
@@ -34,6 +34,23 @@ verified-by: M8 接口对表（QT-42 前置 ②）
 | 事件收集 | 异步批量落库 | 不在热路径 |
 | 监控 | 敞口 / 告警 / 合规检测 | 不阻断下单（阻断靠熔断指令） |
 
+## 3.1 包布局（现状，2026-10-23）
+
+```
+cmd/
+  riskservice/       进程入口：rule.New(Memory Store) + httpapi.New + http.Server（127.0.0.1:8086）
+internal/
+  rule/              领域核心：RuleType/Scope/Status 冻结枚举、Revision 校验与参数规范化、
+                      VersionHash、Store 端口 + Memory 实现、Migrations()（7 条幂等 DDL）、
+                      Service（Create / Update / Approve / List / Audit）
+  httpapi/           传输层：标准库 http.ServeMux 的 4 个规则端点 + 严格解码 + wire code 映射
+doc.go               仓级包文档（无代码）
+```
+
+**依赖方向单一**：`cmd/riskservice` → `internal/httpapi` → `internal/rule`；`internal/rule` 不 import 传输层。
+**未落**：PG Store 与迁移执行入口、快照（X3b）、事件（X3c）、熔断（X3d）、monitor 三端点（U7 未裁）、鉴权。
+清单见 `docs/TASKS.md` QT-42 施工记录。
+
 ## 4. 三份契约（功能的边界就在这三份文件里）
 
 | 维度 | 文件 | 回答什么问题 |
@@ -45,15 +62,19 @@ verified-by: M8 接口对表（QT-42 前置 ②）
 ## 5. 依赖方向
 
 ```
-contracts（规则 DTO / 事件 DTO）+ kit（logging/http/db）
+contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未引入）
         ↑
  tellurion-risk ──(HTTP 粗粒度)──► core 进程内 RiskPolicy
         └──(HTTP 异步)──► 事件回传
 ```
 
+- 规则侧首批实装**零跨仓依赖**：版本 hash 与枚举都在 `internal/rule` 自己定义（域标签风险见 `db-schema.md` §5）。
+- 契约（`RuleSnapshot` / `RuleEvent` / `BreakerCommand`）要等 X3b/X3c 出现第二个 Go 使用方后才按 ADR-0001 ① 迁 contracts。
+
 ## 6. 关键决策
 
 - [`adr/0001-两层结构-真相源出仓裁决留内核.md`](adr/0001-两层结构-真相源出仓裁决留内核.md)
+- [`adr/0002-规则版本-hash-与审批状态机的裁决.md`](adr/0002-规则版本-hash-与审批状态机的裁决.md)
 
 ## 7. 非目标（明确不做）
 
@@ -66,7 +87,7 @@ contracts（规则 DTO / 事件 DTO）+ kit（logging/http/db）
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| X3a | 规则定义 + 版本 + 审批状态机 | ⬜ |
+| X3a | 规则定义 + 版本 + 审批状态机 + 审计 | 🔶 已实装（`internal/rule` + `internal/httpapi` 4 端点，Memory Store）；PG Store / 迁移执行 / 鉴权未落 |
 | X3b | 快照 + `resolve` / `bundle` | ⬜ |
 | X3c | 事件回传 + 监控聚合 | ⬜ |
 | X3d | 熔断指令（幂等） | ⬜ |

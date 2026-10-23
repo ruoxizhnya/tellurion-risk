@@ -1,8 +1,11 @@
-// Package risk 是 tellurion-risk 的占位包。
+// Package risk 是 tellurion-risk 的仓级文档锚点。
 //
-// 本仓尚未实现（见 README 的状态一节）。放这个文件只是为了：
-//  1. 让 `go build ./...` 从一开始就是绿的（空 module 会报 no Go files）；
-//  2. 让本仓可被 `go list ./...` 识别，从而能接入 R1/R2 自检。
+// 本仓是风控规则的真相源（规则定义 / 版本 / 审批 / 审计），同步裁决留在 core 进程内。
+// 实现按能力拆子包，根包不放代码：
 //
-// 实现落地时按能力拆子包，不要把所有代码堆在根包。
+//   - internal/rule       规则领域：冻结枚举、version_hash、Store 端口与 Memory 实现、DDL、审批状态机与审计
+//   - internal/httpapi    规则管理的 4 个 HTTP 端点（严格解码 + 错误码映射）
+//   - cmd/riskservice     服务入口
+//
+// 本仓当前零跨仓依赖（contracts / kit 均未引入），单独 checkout 即可 go build / vet / test。
 package risk
