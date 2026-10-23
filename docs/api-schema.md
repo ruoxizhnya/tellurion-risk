@@ -1,19 +1,19 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: QT-42 X3c 事件回传实装——POST /events 形状、207 partial_failure 与去重键对表
+verified-by: QT-42 X3d 熔断指令实装——POST /breakers 幂等键、载荷身份与 409 对表
 ---
 
 # API Schema — tellurion-risk
 
-> **实现状态（2026-10-24）**：**规则管理 4 端点 + 快照 3 端点 + 事件回传 1 端点已落地**（`POST /rules`、
+> **实现状态（2026-10-24）**：**规则管理 4 端点 + 快照 3 端点 + 事件回传 1 端点 + 熔断 1 端点已落地**（`POST /rules`、
 > `PUT /rules/{id}`、`POST /rules/{id}/approve`、`GET /rules`、`POST /resolve`、`GET /snapshots/{hash}`、
-> `GET /snapshots/{hash}/bundle`、`POST /events`），实现在 `internal/rule`（快照内容寻址 + `ParseBundle`
-> 进程内边界）与 `internal/event`（事件校验 + 去重键），传输在 `internal/httpapi`
-> （标准库 `net/http`，不是 gin），持久化有 Memory 与 PG（`internal/pgstore`，启动时执行幂等 DDL；
-> 事务边界见 ADR-0003）。
-> **未落地**：`POST /breakers`（X3d）、`monitor/*` 三端点（U7 未裁、形状不冻结）、
-> 鉴权（QT-50 ④）、core 侧消费接线（run 的 `risk_rules_hash` 生产者仍写空串，F3）。
+> `GET /snapshots/{hash}/bundle`、`POST /events`、`POST /breakers`），实现在 `internal/rule`（快照内容寻址 +
+> `ParseBundle` 进程内边界）、`internal/event`（事件校验 + 去重键）与 `internal/breaker`（熔断指令 + 幂等键），
+> 传输在 `internal/httpapi`（标准库 `net/http`，不是 gin），持久化有 Memory 与 PG（`internal/pgstore`，
+> 启动时执行幂等 DDL；事务边界见 ADR-0003）。
+> **未落地**：`monitor/*` 三端点（U7 未裁、形状不冻结）、鉴权（QT-50 ④）、
+> core 侧消费接线（run 的 `risk_rules_hash` 生产者仍写空串，F3）。
 > 未落项逐条登记在 `docs/TASKS.md` QT-42 施工记录。
 >
 > 本文件是**目标契约 + 现状**：已实现的行以代码为准，未实现的行是欠账，不允许把欠账当现状描述。
@@ -42,7 +42,7 @@ verified-by: QT-42 X3c 事件回传实装——POST /events 形状、207 partial
 | GET | `/api/risk/snapshots/{hash}` | 取规则快照（同一 hash 两次拉取**字节一致**；按 hash 缓存永不失效） | ✅ |
 | GET | `/api/risk/snapshots/{hash}/bundle` | 拉规则包（run 前 1 次；body = canonical snapshot JSON，`rule.ParseBundle` 直接吃） | ✅ |
 | POST | `/api/risk/events` | 回传裁决事件（异步批量，**非热路径**） | ✅ X3c（2026-10-24） |
-| POST | `/api/risk/breakers` | 下发熔断指令（幂等键）— ⛔ X3d |
+| POST | `/api/risk/breakers` | 下发熔断指令（幂等键） | ✅ X3d（2026-10-24） |
 
 ### 监控（聚合层）
 
@@ -61,6 +61,12 @@ verified-by: QT-42 X3c 事件回传实装——POST /events 形状、207 partial
 > 全部成功 → `200 {accepted, duplicates}`；部分条目失败 → `207 {accepted, duplicates, failed:[{index, code, message}], code:"partial_failure"}`。
 > 去重键 `run_id + order_id + event_seq`；未知字段不丢（落库原文进 `raw` JSONB）。
 > 整批不可解析（含空数组）→ `400 invalid_params`；落库失败 → `500 internal`，调用方重试整批（去重键保证幂等）。
+>
+> `POST /api/risk/breakers`（X3d）：
+> 请求 `{breaker_id, action, scope, reason?, ts}` → `200 {breaker_id, status:"applied"|"already_applied"}`。
+> 冻结动作枚举 `halt`（停机）/ `cancel_all`（撤单）；`scope` 复用规则的冻结枚举。
+> 幂等键 `breaker_id`；**载荷身份 = action + scope + reason**（`ts` 不参与：重试可重新生成时间）；
+> 同键不同载荷 → `409 idempotency_conflict`；未知 action / scope / 缺字段 → `400 invalid_params`。
 
 ## 2. 错误码与 fail-closed 语义
 
@@ -72,7 +78,7 @@ verified-by: QT-42 X3c 事件回传实装——POST /events 形状、207 partial
 | 角色不足（写侧非 operator / 读侧非 service） | 403 `forbidden` — ⛔ 同上 | 不重试 |
 | 规则类型不在冻结枚举 | 400 `invalid_rule_type` | 修正请求，不重试 |
 | 参数非法（非 JSON 对象 / 空 / 超 64 KiB）、scope 非法、请求体非法 | 400 `invalid_params` | 修正请求，不重试 |
-| 同一幂等键（`rule_id`）不同内容 | 409 `idempotency_conflict` | **当冲突处理**，不许当成功 |
+| 同一幂等键（`rule_id` / `breaker_id`）不同内容 | 409 `idempotency_conflict` | **当冲突处理**，不许当成功 |
 | 规则不存在 | 404 `rule_not_found` | 不重试 |
 | 编辑基准 `base_revision` 过期 | 409 `revision_conflict` | 重读 head 后再改 |
 | 编辑已废弃规则 | 409 `rule_deprecated` | ⛔ **本切片不产生**（见下注） |
@@ -80,7 +86,7 @@ verified-by: QT-42 X3c 事件回传实装——POST /events 形状、207 partial
 | revision 不存在 | 404 `revision_not_found` | 不重试 |
 | 无 approved 版本 | 404 `no_approved_rules` — ✅ | run 前拒绝启动 |
 | 规则 hash 不存在 | 404 `snapshot_not_found` — ✅ | 拒绝（不回退 latest） |
-| 熔断指令重复（同键同载荷） | 200 + `already_applied` — ⛔ X3d | 视为成功（幂等） |
+| 熔断指令重复（同键同载荷） | 200 + `already_applied` — ✅ X3d | 视为成功（幂等） |
 | 事件批量部分失败 | 207 + `partial_failure` + 失败明细 — ✅ X3c | 重试失败项，不重发全量 |
 | 其它 | 500 `internal`（**不吐内部原文**） | 服务端问题 |
 
@@ -102,7 +108,8 @@ verified-by: QT-42 X3c 事件回传实装——POST /events 形状、207 partial
 - `POST /rules` 的幂等键是 `rule_id`（调用方给）：同键同内容 → 200 + 现有 revision；同键不同内容 → 409 `idempotency_conflict`。
 - `PUT /rules/{id}` 必须带 `base_revision`：不匹配当前 head → 409 `revision_conflict`（防丢更新）。
 - `POST /rules/{id}/approve` 对**同一 revision** 重放幂等（同 `version_hash`）；状态机之外没有第二条路。
-- `POST /breakers` 必须带幂等键（`breaker_id`），同键同载荷重复调用不重复执行；同键不同载荷 → 409。
+- `POST /breakers` 必须带幂等键（`breaker_id`），同键同载荷重复调用不重复执行（200 `already_applied`）；
+  同键不同载荷 → 409 `idempotency_conflict`。载荷身份 = `action + scope + reason`，`ts` 不参与。✅
 - `POST /events` 支持批量 + 去重键（`run_id + order_id + event_seq`）；部分失败返回 207，只重发失败项；整批落库失败返回 500，可整批重试（去重幂等）。✅
 - `resolve` / `snapshots` / `rules`（GET）只读，可任意重试。
 
@@ -111,6 +118,7 @@ verified-by: QT-42 X3c 事件回传实装——POST /events 形状、207 partial
 > 逐端点 / 逐符号的版本策略见 `ARCHITECTURE.md` §9.6；本节只留三条总则。
 
 - 规则**类型**（枚举）：新增类型 = MINOR（旧读者必须 fail-closed 拒收未知类型）；改既有类型的语义 = breaking（老 run 的 `risk_rules_hash` 可比性失效）。
+- 熔断**动作**（枚举）：新增动作 = MINOR（旧执行方必须 fail-closed 拒收未知动作）；幂等键语义 frozen。
 - 端点只增不删；废弃走 `deprecated` 头 + 一个 MINOR 周期。
 - 快照格式变更必须保留旧格式读取器（否则历史回测不可复现）；hash 算法变更 = 域标签 v2，全历史 hash 作废。
 

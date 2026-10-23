@@ -15,6 +15,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib" // 注册 "pgx" database/sql 驱动
 
+	"tellurion-risk/internal/breaker"
 	"tellurion-risk/internal/event"
 	"tellurion-risk/internal/httpapi"
 	"tellurion-risk/internal/pgstore"
@@ -40,9 +41,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("riskservice: %v", err)
 	}
+	breakers, err := breaker.New(breaker.Options{Store: stores.breakers})
+	if err != nil {
+		log.Fatalf("riskservice: %v", err)
+	}
 	srv := &http.Server{
-		Addr:              *addr,
-		Handler:           httpapi.New(svc, httpapi.WithEvents(events)).Handler(),
+		Addr: *addr,
+		Handler: httpapi.New(svc,
+			httpapi.WithEvents(events),
+			httpapi.WithBreakers(breakers),
+		).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	log.Printf("riskservice: listening on %s", *addr)
@@ -53,15 +61,20 @@ func main() {
 
 // stores 汇总本进程装配的各个 Store；PG 模式下同一个 *pgstore.Store 满足全部端口。
 type stores struct {
-	rules  rule.Store
-	events event.Store
+	rules    rule.Store
+	events   event.Store
+	breakers breaker.Store
 }
 
 // openStores 选择持久化实现并跑迁移。空 DSN = Memory（显式告警，避免误上生产）。
 func openStores(dsn string) (stores, func(), error) {
 	if dsn == "" {
 		log.Printf("riskservice: RISK_DATABASE_URL is empty, using in-memory store (non-persistent)")
-		return stores{rules: rule.NewMemory(), events: event.NewMemory()}, func() {}, nil
+		return stores{
+			rules:    rule.NewMemory(),
+			events:   event.NewMemory(),
+			breakers: breaker.NewMemory(),
+		}, func() {}, nil
 	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -79,5 +92,5 @@ func openStores(dsn string) (stores, func(), error) {
 	}
 	log.Printf("riskservice: using PostgreSQL store, migrations applied")
 	st := pgstore.New(db)
-	return stores{rules: st, events: st}, func() { _ = db.Close() }, nil
+	return stores{rules: st, events: st, breakers: st}, func() { _ = db.Close() }, nil
 }

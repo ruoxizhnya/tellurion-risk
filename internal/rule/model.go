@@ -42,6 +42,13 @@ var scopes = map[Scope]struct{}{
 	ScopeSymbol:   {},
 }
 
+// Valid 报告 scope 是否在冻结枚举里。跨包（熔断指令等）复用同一份枚举，
+// 不在别处再抄一遍字符串。
+func (s Scope) Valid() bool {
+	_, ok := scopes[s]
+	return ok
+}
+
 // Status 是 revision 的审批状态。状态机之外没有第二条路：
 // draft → approved → active → deprecated（`active → deprecated` 只在同规则新 revision 激活时发生）。
 type Status string

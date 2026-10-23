@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: QT-42 X3c 事件回传实装——批量/去重/207 与 internal/event · risk.risk_events 对表
+verified-by: QT-42 X3d 熔断指令实装——幂等键/载荷身份与 internal/breaker · risk.circuit_orders 对表
 ---
 
 # Dataflow — tellurion-risk
@@ -63,12 +63,14 @@ core 侧消费接线、熔断、监控未落地，未落项逐条登记在 `docs
 10. 每笔 `CheckOrder(order)` → 进程内裁决 → 通过 / 拒绝 / 降规模
 11. 事件进本地队列
 
-### run 后（异步）—— ✅ X3c；熔断 / 监控未落
+### run 后（异步）—— ✅ X3c / X3d；监控聚合未落
 
 12. 批量 `POST /api/risk/events` → 逐条校验（缺 `run_id` / `order_id` / `ts` 记 failed）→
     合法条目按 `(run_id, order_id, event_seq)` 幂等落 `risk_events`：已存在 = duplicate（200 计数），
     单条不合法 = 207 `partial_failure` + `failed[{index, code, message}]`；整批落库失败 = 500，重试整批
-13. 监控层聚合敞口与告警；越限触发 `POST /breakers`（U7 未裁 ⇒ 监控三端点形状不冻结）— ⛔
+13. `POST /api/risk/breakers` 可幂等下发熔断指令（`breaker_id` + 载荷身份 action/scope/reason）：
+    首次 `applied`、同键同载荷 `already_applied`、同键不同载荷 409；落 `circuit_orders`。
+    监控层自动越限触发（`monitor/*` 三个端点）仍未落 — ⛔ U7
 
 ## 3. 失败模式（每一处 fail-closed 都要能指名）
 
@@ -83,7 +85,7 @@ core 侧消费接线、熔断、监控未落地，未落项逐条登记在 `docs
 | 服务不可用 | 拿不到规则快照 | **拒绝开跑**（不许用默认限额） | ✅（resolve 侧：`no_approved_rules` / `snapshot_not_found` 拒绝；core 接线后由调用方执行） |
 | 规则被改但 run 里没记 hash | 结果不可复现 | `risk_rules_hash` 必写进结果 | ⛔ core 侧接线（F3） |
 | 事件回传失败 | 留痕缺失 | 批量原子落库：整批失败 500 后重试整批（去重键幂等）；单条不合法 207 只重发 failed；允许延迟，不允许丢 | ✅（X3c：`internal/event` + `risk.risk_events` 主键去重） |
-| 熔断指令重复 | 重复平仓 | 幂等键 | ⛔ X3d |
+| 熔断指令重复 | 重复平仓 | 幂等键 `breaker_id`：同键同载荷 → 200 `already_applied`；同键不同载荷 → 409（不执行） | ✅（X3d：`internal/breaker` + `circuit_orders` 主键） |
 
 ## 4. 不变量（可被测试钉住的）
 
@@ -97,6 +99,7 @@ core 侧消费接线、熔断、监控未落地，未落项逐条登记在 `docs
 8. `risk_rules_hash` 只由 active 快照内容派生（排序 + canonical params，不含 `created_at`）；钉住的历史 hash 永不失效、不回退 latest。✅ `TestSnapshotHash_IsContentAddressed` / `TestResolve_PinnedHashNeverFallsBack`
 9. 写路径的「读-改-写」全部在 `Store.Tx` 内；中途失败整笔回滚（Memory 与 PG 同语义）。✅ `TestMemoryTx_RollsBackAllWrites` / `TestServiceApprove_RollsBackAllWritesOnFailure`（ADR-0003）
 10. 事件按 `(run_id, order_id, event_seq)` 幂等：同键重放只计 duplicate、不重复落库；未知字段保留在原文。✅ `TestIngest_DedupesByRunOrderSeq` / `TestIngest_PartialFailureKeepsValidItems`
+11. 熔断指令按 `breaker_id` 幂等：同键同载荷重放 = `already_applied`（ts 不参与载荷身份）；同键不同载荷 = 409，不重复执行。✅ `TestApply_IdempotencyKey` / `TestAPI_BreakerIdempotency`
 
 ## 5. 与契约文档的关系
 

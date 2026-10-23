@@ -87,6 +87,19 @@ var migrationStatements = []string{
 		received_at TIMESTAMPTZ NOT NULL,
 		PRIMARY KEY (run_id, order_id, event_seq)
 	)`,
+
+	// circuit_orders 是熔断指令下发记录。幂等键 breaker_id = 主键；
+	// 载荷身份（action + scope + reason）由应用层比对，command_ts 不参与（重试可换时间）。
+	// status 今天只写 'applied'；执行方 ACK 状态待升格 ADR 后再扩。
+	`CREATE TABLE IF NOT EXISTS risk.circuit_orders (
+		breaker_id  TEXT PRIMARY KEY,
+		action      TEXT NOT NULL CHECK (action IN ('halt','cancel_all')),
+		scope       TEXT NOT NULL CHECK (scope IN ('global','account','strategy','symbol')),
+		reason      TEXT NOT NULL DEFAULT '',
+		command_ts  TIMESTAMPTZ NOT NULL,
+		status      TEXT NOT NULL DEFAULT 'applied',
+		received_at TIMESTAMPTZ NOT NULL
+	)`,
 }
 
 // Migrations 返回迁移语句的副本（调用方不能改到内部数组）。

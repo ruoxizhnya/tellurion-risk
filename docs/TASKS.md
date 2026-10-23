@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: QT-42 X3c 事件回传实装（施工记录已落）
+verified-by: QT-42 X3d 熔断指令实装（施工记录已落）
 ---
 
 # TASKS — tellurion-risk 未完成项
@@ -164,6 +164,41 @@ verified-by: QT-42 X3c 事件回传实装（施工记录已落）
 > 6. `rule_deprecated` 错误码不可达（冻结接口面无 deprecate 端点）。
 > 7. **core 侧消费接线（跨仓）**：`risk_rules_hash` 生产者仍写空串（F3）；不在本仓施工，已报协调者。
 
+> **施工记录（2026-10-24 · X3d 熔断指令）**
+>
+> 已交付（本仓）：
+>
+> - `internal/breaker`：wire `Command`（`breaker_id` / `action` / `scope` / `reason?` / `ts`）、
+>   冻结动作枚举 `halt` / `cancel_all`、`Validate` fail-closed（未知 action / scope 拒收）、
+>   幂等载荷身份 `SamePayload` = `action + scope + reason`（`ts` 不参与，重试可换时间）、
+>   `Memory` Store、`Service.Apply`。
+> - `risk.circuit_orders` DDL（`breaker_id` 主键；`action` / `scope` CHECK 与 Go 枚举同源；
+>   `status` 今天只写 `applied`；`command_ts` 与 `received_at` 分开存）。
+> - `internal/pgstore`：`breaker.Store.PutBreaker`（事务内 `INSERT ... ON CONFLICT DO NOTHING`；
+>   冲突时读回并比对载荷身份：相同 → already_applied，不同 → `ErrIdempotencyConflict`）。
+> - `internal/httpapi`：`POST /api/risk/breakers`（`WithBreakers` 按需装配）：
+>   200 `{breaker_id, status:"applied"|"already_applied"}`；409 `idempotency_conflict`；
+>   400 `invalid_params`（未知 action / scope / 缺字段）。
+> - `cmd/riskservice`：熔断服务装配（PG 与规则/事件共用 `*pgstore.Store`，Memory 模式用 `breaker.NewMemory`）。
+> - 测试：首次 applied、同键同载荷（不同 ts）already_applied、同键不同 action/reason → 409、
+>   未知 action/scope/缺字段 → invalid_params、wire 200/409/400/405。
+> - 文档同笔：`db-schema.md` §1/§1约束/§5/§6、`api-schema.md` 头部/§1/§2/§3/§4、`dataflow.md`
+>   run 后/失败表/不变量、`ARCHITECTURE.md` §3.1/§8/§9.3/§9.4/§9.5、`AGENTS.md` §1。
+>
+> 验收口径：`go build ./... && go vet ./... && go test ./... -count=1` 全绿；破坏验证（`SamePayload`
+> 把 `ts` 算进载荷身份）→ 幂等测试与 wire 重放测试红，逐字节还原后绿。
+>
+> 未落项（本条**取代**上一条列表）：
+>
+> 1. **监控 3 端点**：`monitor/exposure` / `alerts` / `evaluate`——U7 未裁，形状不冻结，本切片不做。
+> 2. **熔断执行方与 ACK**：`circuit_orders.status` 今天只写 `applied`；谁执行、如何回报
+>    `acknowledged/failed` 随升格 ADR。
+> 3. 鉴权与 actor：QT-50 ④ 未落，审计 `actor` 恒为空串。
+> 4. `risk.limits` 的读写路径与端点：表已建，读取口径未冻结。
+> 5. 审计读取无 HTTP 端点：`Store.ListAudit` 只有进程内接口。
+> 6. `rule_deprecated` 错误码不可达（冻结接口面无 deprecate 端点）。
+> 7. **core 侧消费接线（跨仓）**：`risk_rules_hash` 生产者仍写空串（F3）；不在本仓施工，已报协调者。
+
 
 ---
 
@@ -183,7 +218,7 @@ verified-by: QT-42 X3c 事件回传实装（施工记录已落）
 | X3a | 规则定义 + revision + 审批状态机（draft→approved→active→deprecated） | `QT-42` | 🔶 已实装（`internal/rule` + `internal/httpapi` 4 端点；PG Store / 迁移执行 / 事务边界已落）；鉴权未落 |
 | X3b | 快照内容寻址 + `resolve` / `bundle` | `QT-42` | 🔶 已实装（2026-10-23：`rule_snapshots` DDL + 三端点 + `ParseBundle` 边界；Memory/PG 双实现）；core 侧消费接线（F3）未落 |
 | X3c | 事件回传（异步批量）+ 监控聚合（敞口 / 告警） | `QT-42` | 🔶 事件回传已实装（2026-10-24：`risk.risk_events` + `POST /events`，200/207 + 去重键）；监控聚合 ⛔ U7 未裁 |
-| X3d | 熔断指令（幂等键） | `QT-42` | X3c |
+| X3d | 熔断指令（幂等键） | `QT-42` | 🔶 已实装（2026-10-24：`risk.circuit_orders` + `POST /breakers`，幂等键 + 409）；执行方 / ACK 未落 |
 
 ## 二、跨仓指针（不在本仓，勿双写）
 

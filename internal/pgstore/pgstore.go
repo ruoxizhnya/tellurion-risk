@@ -18,18 +18,20 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"tellurion-risk/internal/breaker"
 	"tellurion-risk/internal/event"
 	"tellurion-risk/internal/rule"
 )
 
-// Store 在 *sql.DB 上实现 rule.Store 与 event.Store。
+// Store 在 *sql.DB 上实现 rule.Store、event.Store 与 breaker.Store。
 type Store struct {
 	db *sql.DB
 }
 
 var (
-	_ rule.Store  = (*Store)(nil)
-	_ event.Store = (*Store)(nil)
+	_ rule.Store    = (*Store)(nil)
+	_ event.Store   = (*Store)(nil)
+	_ breaker.Store = (*Store)(nil)
 )
 
 // New 构造 Store。db 的生命周期由调用方管理。
@@ -570,6 +572,56 @@ func (s *Store) PutEvents(ctx context.Context, records []event.Record) (int, int
 		return 0, 0, err
 	}
 	return accepted, len(records) - accepted, nil
+}
+
+// PutBreaker 幂等写入熔断指令：breaker_id 冲突时比对载荷身份（action + scope + reason），
+// 相同 → created=false（already_applied）；不同 → breaker.ErrIdempotencyConflict。
+func (s *Store) PutBreaker(ctx context.Context, cmd breaker.Command, receivedAt time.Time) (bool, error) {
+	created := false
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+			INSERT INTO risk.circuit_orders
+				(breaker_id, action, scope, reason, command_ts, status, received_at)
+			VALUES ($1, $2, $3, $4, $5, 'applied', $6)
+			ON CONFLICT (breaker_id) DO NOTHING`,
+			cmd.BreakerID, string(cmd.Action), string(cmd.Scope), cmd.Reason, cmd.Ts, receivedAt)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			created = true
+			return nil
+		}
+		var (
+			action string
+			scope  string
+			reason string
+		)
+		err = tx.QueryRowContext(ctx,
+			`SELECT action, scope, reason FROM risk.circuit_orders WHERE breaker_id = $1`,
+			cmd.BreakerID).Scan(&action, &scope, &reason)
+		if err != nil {
+			return err
+		}
+		existing := breaker.Command{
+			BreakerID: cmd.BreakerID,
+			Action:    breaker.Action(action),
+			Scope:     rule.Scope(scope),
+			Reason:    reason,
+		}
+		if !existing.SamePayload(cmd) {
+			return fmt.Errorf("%w: %s", breaker.ErrIdempotencyConflict, cmd.BreakerID)
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return created, nil
 }
 
 // mapPgError 把唯一约束冲突翻译成领域哨兵；其他错误原样返回。

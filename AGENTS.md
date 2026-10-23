@@ -6,15 +6,16 @@
 
 风控规则的**真相源**：规则定义、限额表、聚合监控与熔断。**同步裁决（`RiskPolicy`）留在 core 进程内**。
 
-**状态**：🔶 首批实装（QT-42 X3a 规则侧 + X3b 快照侧 + PG Store 事务边界 + X3c 事件回传）。规则定义 / 版本 / 审批 /
-审计 + 快照内容寻址 / `resolve` / `snapshots/{hash}` / `bundle` 三端点 / 进程内 `ParseBundle` 边界 +
-`POST /events`（批量、去重键、207）。熔断（X3d）、监控（U7 未裁）尚未落地。
+**状态**：🔶 首批实装（QT-42 X3a 规则侧 + X3b 快照侧 + PG Store 事务边界 + X3c 事件回传 + X3d 熔断指令）。
+规则定义 / 版本 / 审批 / 审计 + 快照内容寻址 / `resolve` / `snapshots/{hash}` / `bundle` 三端点 /
+进程内 `ParseBundle` 边界 + `POST /events`（批量、去重键、207）+ `POST /breakers`（幂等键、409）。
+监控（U7 未裁）尚未落地。
 
-**本仓今天的实现**（`internal/rule` / `internal/event` / `internal/pgstore` / `internal/httpapi` /
-`cmd/riskservice`）：规则 4 端点 + 快照 3 端点 + 事件 1 端点 + 审批状态机 + 内容寻址 `version_hash` /
-`risk_rules_hash` + 审计 + `ParseBundle`（进程内 RiskPolicy 输入形状）+ 事件去重落库；
-持久化有 `Memory` 与 PG（`internal/pgstore`，启动时执行 `rule.Migrations()` 幂等 DDL）；
-Service 的读-改-写经 `Store.Tx`（PG 行锁）完成，不再用进程内互斥锁；
+**本仓今天的实现**（`internal/rule` / `internal/event` / `internal/breaker` / `internal/pgstore` /
+`internal/httpapi` / `cmd/riskservice`）：规则 4 端点 + 快照 3 端点 + 事件 1 端点 + 熔断 1 端点 +
+审批状态机 + 内容寻址 `version_hash` / `risk_rules_hash` + 审计 + `ParseBundle`（进程内 RiskPolicy 输入形状）+
+事件去重落库 + 熔断幂等落库；持久化有 `Memory` 与 PG（`internal/pgstore`，启动时执行
+`rule.Migrations()` 幂等 DDL）；Service 的读-改-写经 `Store.Tx`（PG 行锁）完成，不再用进程内互斥锁；
 core 侧消费接线未做（run 的 `risk_rules_hash` 生产者仍写空串，F3）。
 
 **留在 core 的实现**：`core:pkg/risk`（`RiskManager` / `RegimeDetector` / `StopLossChecker` / `CheckOrder`）+ `core:pkg/compliance`（异常交易 / 减持 / 大额报送）+ `core:pkg/alert`（6 检测器 + 通道）。
