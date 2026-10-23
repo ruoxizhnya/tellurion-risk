@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-23
-verified-by: QT-42 X3a 规则侧 + X3b 快照侧首批实装（施工记录已落）
+last-verified: 2026-10-24
+verified-by: QT-42 PG Store + 迁移执行 + 事务边界实装（施工记录已落）
 ---
 
 # TASKS — tellurion-risk 未完成项
@@ -96,6 +96,41 @@ verified-by: QT-42 X3a 规则侧 + X3b 快照侧首批实装（施工记录已�
 >   这是跨仓单（core 侧改动），不在本仓。`ParseBundle` 的 Go 类型出现第二个使用方（core）后，
 >   `Snapshot` / `SnapshotRule` 按 ADR-0001 ① 迁 contracts。
 
+> **施工记录（2026-10-24 · PG Store + 迁移执行 + 事务边界）**
+>
+> 已交付（本仓，单仓可自证）：
+>
+> - `internal/rule`：`Store.Tx(ctx, fn)` 端口；`Service` 的 `Create` / `Update` / `Approve` / `Resolve(latest)`
+>   全部在 `Tx` 内完成「读-改-写」，**删除进程内互斥锁**（ADR-0003）；`Memory.Tx` 用全量状态深拷贝 +
+>   失败还原模拟回滚；`Resolve(latest)` 落库后回读快照，同 hash 的 `created_at` 不漂移。
+> - `internal/rule/ddl.go`：`risk.limits` 同批建表（scope + subject + limit_key；仅建表，读写路径未冻结）。
+> - `internal/pgstore`：`rule.Store` 全量 PG 实现（`Tx` = BEGIN/COMMIT/ROLLBACK；事务内 `GetDefinition`
+>   用 `SELECT ... FOR UPDATE`；JSONB / TIMESTAMPTZ / NULL 映射；唯一约束冲突翻译为领域哨兵）；
+>   `Migrate` 按序执行 `rule.Migrations()`。
+> - `cmd/riskservice`：`-dsn` / `RISK_DATABASE_URL` 非空 → Ping → Migrate → PG Store；
+>   空 DSN 显式告警后退回 Memory（仅本地开发）。
+> - 依赖登记：`github.com/jackc/pgx/v5 v5.7.5`（AGENTS §4；仅进程入口空白导入 `stdlib`）。
+> - 测试：Memory Tx 全量回滚、Approve 中途写失败整笔回滚、PG 唯一约束错误映射、`risk.limits` DDL 形状。
+> - 文档同笔：`db-schema.md` §1/§4/§5/§6、`api-schema.md` 头部、`dataflow.md` 现状/失败表/不变量、
+>   `ARCHITECTURE.md` §3.1/§5/§6/§8/§9.5、`AGENTS.md` §1/§4、ADR-0003 + ADR 索引。
+>
+> 验收口径：`go build ./... && go vet ./... && go test ./... -count=1` 全绿；破坏验证（把 Approve 的
+> `Store.Tx` 改回直接调用 Store）→ `TestServiceApprove_RollsBackAllWritesOnFailure` 红，逐字节还原后绿。
+>
+> 未落项（本条**取代** X3a 记录里的第 1、2 条；其余继续有效，另加一条）：
+>
+> 1. ~~PG Store 与迁移执行入口~~ ✅ 2026-10-24。
+> 2. ~~PG 事务边界~~ ✅ 2026-10-24（ADR-0003）。
+> 3. X3c 事件：`risk.risk_events` 表与 `POST /events`（异步批量、207 partial_failure）。
+> 4. X3d 熔断：`risk.circuit_orders` 表与 `POST /breakers`（幂等键）。
+> 5. 监控 3 端点：`monitor/exposure` / `alerts` / `evaluate`——U7 未裁，形状不冻结，本切片不做。
+> 6. 鉴权与 actor：QT-50 ④ 未落，审计 `actor` 恒为空串。
+> 7. `risk.limits` 的读写路径与端点：表已建，读取口径（快照附带 / 独立端点）未冻结。
+> 8. 审计读取无 HTTP 端点：`Store.ListAudit` 只有进程内接口。
+> 9. `rule_deprecated` 错误码不可达（冻结接口面无 deprecate 端点）。
+> 10. **core 侧消费接线（跨仓）**：`risk_rules_hash` 生产者仍写空串（F3）；需 core 在 run 前
+>    `resolve` → `ParseBundle` → 写 `run_provenance`。不在本仓施工，已报协调者。
+
 
 ---
 
@@ -112,8 +147,8 @@ verified-by: QT-42 X3a 规则侧 + X3b 快照侧首批实装（施工记录已�
 
 | 阶段 | 内容 | 上游单号 | 前置 |
 |---|---|---|---|
-| X3a | 规则定义 + revision + 审批状态机（draft→approved→active→deprecated） | `QT-42` | 🔶 已实装（`internal/rule` + `internal/httpapi` 4 端点，Memory Store）；PG Store / 迁移执行 / 鉴权未落 |
-| X3b | 快照内容寻址 + `resolve` / `bundle` | `QT-42` | 🔶 已实装（2026-10-23：`rule_snapshots` DDL + 三端点 + `ParseBundle` 边界）；core 侧消费接线（F3）/ PG Store 未落 |
+| X3a | 规则定义 + revision + 审批状态机（draft→approved→active→deprecated） | `QT-42` | 🔶 已实装（`internal/rule` + `internal/httpapi` 4 端点；PG Store / 迁移执行 / 事务边界已落）；鉴权未落 |
+| X3b | 快照内容寻址 + `resolve` / `bundle` | `QT-42` | 🔶 已实装（2026-10-23：`rule_snapshots` DDL + 三端点 + `ParseBundle` 边界；Memory/PG 双实现）；core 侧消费接线（F3）未落 |
 | X3c | 事件回传（异步批量）+ 监控聚合（敞口 / 告警） | `QT-42` | X3b |
 | X3d | 熔断指令（幂等键） | `QT-42` | X3c |
 

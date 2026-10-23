@@ -2,7 +2,7 @@ package rule
 
 // migrationStatements 是本仓 DDL 的唯一真相（取向 ①：Go 数组 + 启动时按序执行、幂等、
 // 无版本表）。每条都必须能在空库上一次跑完，且可重入。
-// 执行入口（PG 连接 + 启动时跑）尚未接线：当前只有 Memory Store。
+// 执行入口：cmd/riskservice 启动时调 pgstore.Migrate（= 按序跑本数组）。
 // 结构变更必须同步 docs/db-schema.md，结构级变更还要立 ADR。
 var migrationStatements = []string{
 	`CREATE SCHEMA IF NOT EXISTS risk`,
@@ -58,6 +58,18 @@ var migrationStatements = []string{
 		risk_rules_hash CHAR(64) PRIMARY KEY CHECK (risk_rules_hash ~ '^[0-9a-f]{64}$'),
 		rules           JSONB NOT NULL CHECK (jsonb_typeof(rules) = 'array' AND jsonb_array_length(rules) > 0),
 		created_at      TIMESTAMPTZ NOT NULL
+	)`,
+
+	// limits 是账户 / 策略 / 标的级限额。本切片只建表：读写路径与端点尚未冻结，
+	// 形状按「scope + subject + 限额键」最小键值设计（docs/db-schema.md §1）。
+	`CREATE TABLE IF NOT EXISTS risk.limits (
+		scope        TEXT NOT NULL CHECK (scope IN ('global','account','strategy','symbol')),
+		subject      TEXT NOT NULL DEFAULT '',
+		limit_key    TEXT NOT NULL,
+		limit_value  NUMERIC NOT NULL,
+		updated_at   TIMESTAMPTZ NOT NULL,
+		PRIMARY KEY (scope, subject, limit_key),
+		CHECK ((scope = 'global') = (subject = ''))
 	)`,
 }
 

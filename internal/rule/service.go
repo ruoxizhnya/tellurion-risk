@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -19,11 +18,12 @@ type Options struct {
 
 // Service 是规则真相源的领域门面：定义 / 版本 / 审批 / 审计。
 //
-// 并发约定：读-改-写必须原子，所以写操作由本结构串行。PG Store 接管时这把锁要换成事务。
+// 并发约定：所有写路径的「读-改-写」都在 Store.Tx 内完成（PG 下即数据库事务）。
+// 不在 Service 里另加进程内互斥锁：多进程部署时锁不住别的实例
+// （docs/adr/0003-pg-store-与事务边界.md）。
 type Service struct {
 	store Store
 	now   func() time.Time
-	mu    sync.Mutex
 }
 
 // New 构造 Service。
@@ -83,9 +83,23 @@ type RuleView struct {
 // Create 建规则。幂等：同 rule_id 同内容 → 返回既有 head（created=false，HTTP 200）；
 // 同 rule_id 不同内容 → ErrIdempotencyConflict（HTTP 409）。
 func (s *Service) Create(ctx context.Context, req CreateRequest) (Definition, Revision, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var (
+		def     Definition
+		rev     Revision
+		created bool
+	)
+	err := s.store.Tx(ctx, func(st Store) error {
+		var err error
+		def, rev, created, err = s.create(ctx, st, req)
+		return err
+	})
+	if err != nil {
+		return Definition{}, Revision{}, false, err
+	}
+	return def, rev, created, nil
+}
 
+func (s *Service) create(ctx context.Context, st Store, req CreateRequest) (Definition, Revision, bool, error) {
 	rev := Revision{
 		RuleID:      req.RuleID,
 		Revision:    1,
@@ -106,8 +120,8 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (Definition, Re
 	now := s.now().UTC()
 	rev.CreatedAt = now
 
-	if existing, err := s.store.GetDefinition(ctx, req.RuleID); err == nil {
-		head, err := s.store.GetRevision(ctx, req.RuleID, existing.HeadRevision)
+	if existing, err := st.GetDefinition(ctx, req.RuleID); err == nil {
+		head, err := st.GetRevision(ctx, req.RuleID, existing.HeadRevision)
 		if err != nil {
 			return Definition{}, Revision{}, false, err
 		}
@@ -129,10 +143,10 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (Definition, Re
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	if err := s.store.CreateRule(ctx, def, rev); err != nil {
+	if err := st.CreateRule(ctx, def, rev); err != nil {
 		return Definition{}, Revision{}, false, err
 	}
-	if err := s.audit(ctx, req.RuleID, rev.Revision, ActionCreate, req.Actor, map[string]any{
+	if err := s.audit(ctx, st, req.RuleID, rev.Revision, ActionCreate, req.Actor, map[string]any{
 		"scope": string(rev.Scope),
 		"type":  string(rev.Type),
 	}); err != nil {
@@ -143,10 +157,23 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (Definition, Re
 
 // Update 生成新 revision。base_revision 必须等于当前 head（防丢更新）。
 func (s *Service) Update(ctx context.Context, req UpdateRequest) (Definition, Revision, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var (
+		def Definition
+		rev Revision
+	)
+	err := s.store.Tx(ctx, func(st Store) error {
+		var err error
+		def, rev, err = s.update(ctx, st, req)
+		return err
+	})
+	if err != nil {
+		return Definition{}, Revision{}, err
+	}
+	return def, rev, nil
+}
 
-	def, err := s.store.GetDefinition(ctx, req.RuleID)
+func (s *Service) update(ctx context.Context, st Store, req UpdateRequest) (Definition, Revision, error) {
+	def, err := st.GetDefinition(ctx, req.RuleID)
 	if err != nil {
 		return Definition{}, Revision{}, err
 	}
@@ -154,7 +181,7 @@ func (s *Service) Update(ctx context.Context, req UpdateRequest) (Definition, Re
 		return Definition{}, Revision{}, fmt.Errorf("%w: base %d, head %d",
 			ErrRevisionConflict, req.BaseRevision, def.HeadRevision)
 	}
-	head, err := s.store.GetRevision(ctx, req.RuleID, def.HeadRevision)
+	head, err := st.GetRevision(ctx, req.RuleID, def.HeadRevision)
 	if err != nil {
 		return Definition{}, Revision{}, err
 	}
@@ -191,10 +218,10 @@ func (s *Service) Update(ctx context.Context, req UpdateRequest) (Definition, Re
 	}
 	def.Description = description
 	def.UpdatedAt = now
-	if err := s.store.UpdateRule(ctx, def, rev); err != nil {
+	if err := st.UpdateRule(ctx, def, rev); err != nil {
 		return Definition{}, Revision{}, err
 	}
-	if err := s.audit(ctx, req.RuleID, rev.Revision, ActionUpdate, req.Actor, map[string]any{
+	if err := s.audit(ctx, st, req.RuleID, rev.Revision, ActionUpdate, req.Actor, map[string]any{
 		"base_revision": req.BaseRevision,
 	}); err != nil {
 		return Definition{}, Revision{}, err
@@ -206,14 +233,27 @@ func (s *Service) Update(ctx context.Context, req UpdateRequest) (Definition, Re
 // 同规则上一条 active revision 跃迁为 deprecated（撤回不是删除，历史快照仍可按 hash 复现）。
 // 对同一 revision 重放是幂等的：返回同一 version_hash。
 func (s *Service) Approve(ctx context.Context, req ApproveRequest) (Definition, Revision, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	def, err := s.store.GetDefinition(ctx, req.RuleID)
+	var (
+		def Definition
+		rev Revision
+	)
+	err := s.store.Tx(ctx, func(st Store) error {
+		var err error
+		def, rev, err = s.approve(ctx, st, req)
+		return err
+	})
 	if err != nil {
 		return Definition{}, Revision{}, err
 	}
-	rev, err := s.store.GetRevision(ctx, req.RuleID, req.Revision)
+	return def, rev, nil
+}
+
+func (s *Service) approve(ctx context.Context, st Store, req ApproveRequest) (Definition, Revision, error) {
+	def, err := st.GetDefinition(ctx, req.RuleID)
+	if err != nil {
+		return Definition{}, Revision{}, err
+	}
+	rev, err := st.GetRevision(ctx, req.RuleID, req.Revision)
 	if err != nil {
 		return Definition{}, Revision{}, err
 	}
@@ -226,7 +266,7 @@ func (s *Service) Approve(ctx context.Context, req ApproveRequest) (Definition, 
 		now := s.now().UTC()
 		rev.Status = StatusApproved
 		rev.ApprovedAt = &now
-		if err := s.store.PutRevision(ctx, rev); err != nil {
+		if err := st.PutRevision(ctx, rev); err != nil {
 			return Definition{}, Revision{}, err
 		}
 	case StatusDeprecated:
@@ -236,16 +276,16 @@ func (s *Service) Approve(ctx context.Context, req ApproveRequest) (Definition, 
 	}
 
 	if def.ActiveRevision > 0 && def.ActiveRevision != rev.Revision {
-		prev, err := s.store.GetRevision(ctx, req.RuleID, def.ActiveRevision)
+		prev, err := st.GetRevision(ctx, req.RuleID, def.ActiveRevision)
 		if err != nil {
 			return Definition{}, Revision{}, err
 		}
 		if prev.Status == StatusActive {
 			prev.Status = StatusDeprecated
-			if err := s.store.PutRevision(ctx, prev); err != nil {
+			if err := st.PutRevision(ctx, prev); err != nil {
 				return Definition{}, Revision{}, err
 			}
-			if err := s.audit(ctx, req.RuleID, prev.Revision, ActionDeprecate, req.Actor, map[string]any{
+			if err := s.audit(ctx, st, req.RuleID, prev.Revision, ActionDeprecate, req.Actor, map[string]any{
 				"superseded_by": rev.Revision,
 			}); err != nil {
 				return Definition{}, Revision{}, err
@@ -256,7 +296,7 @@ func (s *Service) Approve(ctx context.Context, req ApproveRequest) (Definition, 
 	now := s.now().UTC()
 	rev.Status = StatusActive
 	rev.ApprovedAt = &now
-	if err := s.store.PutRevision(ctx, rev); err != nil {
+	if err := st.PutRevision(ctx, rev); err != nil {
 		return Definition{}, Revision{}, err
 	}
 
@@ -264,10 +304,10 @@ func (s *Service) Approve(ctx context.Context, req ApproveRequest) (Definition, 
 	def.Status = StatusActive
 	def.ActiveRevision = rev.Revision
 	def.UpdatedAt = now
-	if err := s.store.UpdateRule(ctx, def, rev); err != nil {
+	if err := st.UpdateRule(ctx, def, rev); err != nil {
 		return Definition{}, Revision{}, err
 	}
-	if err := s.audit(ctx, req.RuleID, rev.Revision, ActionApprove, req.Actor, map[string]any{
+	if err := s.audit(ctx, st, req.RuleID, rev.Revision, ActionApprove, req.Actor, map[string]any{
 		"version_hash": rev.VersionHash,
 	}); err != nil {
 		return Definition{}, Revision{}, err
@@ -318,9 +358,6 @@ type ResolveRequest struct {
 //   - latest：从当前 active revisions 构建快照（内容寻址，active 集没变 ⇒ 同 hash，写入幂等）；
 //     没有任何生效规则 → ErrNoApprovedRules（拒绝启动，不许用默认限额）。
 func (s *Service) Resolve(ctx context.Context, req ResolveRequest) (Snapshot, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	hash, ruleset := strings.TrimSpace(req.Hash), strings.TrimSpace(req.Ruleset)
 	switch {
 	case hash != "" && ruleset != "":
@@ -328,7 +365,7 @@ func (s *Service) Resolve(ctx context.Context, req ResolveRequest) (Snapshot, er
 	case hash != "":
 		return s.store.GetSnapshot(ctx, hash)
 	case ruleset == RulesetLatest:
-		return s.resolveLatestLocked(ctx)
+		return s.resolveLatest(ctx)
 	case ruleset != "":
 		return Snapshot{}, fmt.Errorf("%w: ruleset must be %q", ErrInvalidParams, RulesetLatest)
 	default:
@@ -336,15 +373,29 @@ func (s *Service) Resolve(ctx context.Context, req ResolveRequest) (Snapshot, er
 	}
 }
 
+// resolveLatest 在事务里读 active 集并落快照：并发的 approve 与 resolve 不会读到半套规则。
+func (s *Service) resolveLatest(ctx context.Context) (Snapshot, error) {
+	var snap Snapshot
+	err := s.store.Tx(ctx, func(st Store) error {
+		var err error
+		snap, err = s.buildLatestSnapshot(ctx, st)
+		return err
+	})
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return snap, nil
+}
+
 // GetSnapshot 按 hash 取历史快照（`/snapshots/{hash}` 与 `/bundle` 的共同读路径）。
 func (s *Service) GetSnapshot(ctx context.Context, hash string) (Snapshot, error) {
 	return s.store.GetSnapshot(ctx, hash)
 }
 
-// resolveLatestLocked 把当前 active revisions 收进一份快照并按内容寻址落库。
-// 调用方必须已持有 s.mu（latest 解析路径要写）。
-func (s *Service) resolveLatestLocked(ctx context.Context) (Snapshot, error) {
-	defs, err := s.store.ListDefinitions(ctx, Filter{Active: true})
+// buildLatestSnapshot 把当前 active revisions 收进一份快照并按内容寻址落库。
+// 调用方必须已处于 Store.Tx 内（latest 解析路径要写）。
+func (s *Service) buildLatestSnapshot(ctx context.Context, st Store) (Snapshot, error) {
+	defs, err := st.ListDefinitions(ctx, Filter{Active: true})
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -353,7 +404,7 @@ func (s *Service) resolveLatestLocked(ctx context.Context) (Snapshot, error) {
 	}
 	rules := make([]SnapshotRule, 0, len(defs))
 	for _, def := range defs {
-		rev, err := s.store.GetRevision(ctx, def.RuleID, def.ActiveRevision)
+		rev, err := st.GetRevision(ctx, def.RuleID, def.ActiveRevision)
 		if err != nil {
 			return Snapshot{}, err
 		}
@@ -376,10 +427,12 @@ func (s *Service) resolveLatestLocked(ctx context.Context) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	snap := Snapshot{RiskRulesHash: hash, Rules: rules, CreatedAt: s.now().UTC()}
-	if err := s.store.PutSnapshot(ctx, snap); err != nil {
+	if err := st.PutSnapshot(ctx, snap); err != nil {
 		return Snapshot{}, err
 	}
-	return snap, nil
+	// 回读已落库的快照：同内容重复 resolve 时 created_at 取**首次**写入值，
+	// 不让同一 hash 的元数据漂移。
+	return st.GetSnapshot(ctx, hash)
 }
 
 // Audit 返回某条规则的审计（写操作必留痕；actor 待 QT-50 ④ 鉴权面落地后才有值）。
@@ -387,12 +440,12 @@ func (s *Service) Audit(ctx context.Context, ruleID string) ([]AuditEntry, error
 	return s.store.ListAudit(ctx, ruleID)
 }
 
-func (s *Service) audit(ctx context.Context, ruleID string, revision int, action, actor string, detail any) error {
+func (s *Service) audit(ctx context.Context, st Store, ruleID string, revision int, action, actor string, detail any) error {
 	raw, err := json.Marshal(detail)
 	if err != nil {
 		return fmt.Errorf("rule: audit detail: %w", err)
 	}
-	_, err = s.store.AppendAudit(ctx, AuditEntry{
+	_, err = st.AppendAudit(ctx, AuditEntry{
 		RuleID:   ruleID,
 		Revision: revision,
 		Action:   action,

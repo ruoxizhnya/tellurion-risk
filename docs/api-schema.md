@@ -1,17 +1,18 @@
 ---
 status: active
-last-verified: 2026-10-23
-verified-by: QT-42 规则侧实装（internal/rule + internal/httpapi 4 端点）逐端对表
+last-verified: 2026-10-24
+verified-by: QT-42 PG Store 与事务边界实装——接口面未变，持久化与事务语义对表
 ---
 
 # API Schema — tellurion-risk
 
-> **实现状态（2026-10-23）**：**规则管理 4 端点 + 快照 3 端点已落地**（`POST /rules`、`PUT /rules/{id}`、
+> **实现状态（2026-10-24）**：**规则管理 4 端点 + 快照 3 端点已落地**（`POST /rules`、`PUT /rules/{id}`、
 > `POST /rules/{id}/approve`、`GET /rules`、`POST /resolve`、`GET /snapshots/{hash}`、`GET /snapshots/{hash}/bundle`），
 > 实现在 `internal/rule`（快照内容寻址 + `ParseBundle` 进程内边界），传输在 `internal/httpapi`
-> （标准库 `net/http`，不是 gin），跑在 `Memory` Store 上。
+> （标准库 `net/http`，不是 gin），持久化有 Memory 与 PG（`internal/pgstore`，启动时执行幂等 DDL；
+> 事务边界见 ADR-0003）。
 > **未落地**：`POST /events`（X3c）、`POST /breakers`（X3d）、`monitor/*` 三端点（U7 未裁、形状不冻结）、
-> PG Store 与迁移执行入口、鉴权（QT-50 ④）、core 侧消费接线（run 的 `risk_rules_hash` 生产者仍写空串，F3）。
+> 鉴权（QT-50 ④）、core 侧消费接线（run 的 `risk_rules_hash` 生产者仍写空串，F3）。
 > 未落项逐条登记在 `docs/TASKS.md` QT-42 施工记录。
 >
 > 本文件是**目标契约 + 现状**：已实现的行以代码为准，未实现的行是欠账，不允许把欠账当现状描述。

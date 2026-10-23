@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-23
-verified-by: QT-42 规则侧实装——create/update/approve/audit + X3b resolve/snapshot 时序与 internal/rule 逐段对表
+last-verified: 2026-10-24
+verified-by: QT-42 PG Store 与事务边界实装——并发写/回滚语义与 internal/rule · internal/pgstore 对表
 ---
 
 # Dataflow — tellurion-risk
@@ -23,8 +23,9 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
    └── 异步事件回传 ──►  POST /api/risk/events ──►  risk.risk_events   ⛔ X3c
 ```
 
-**现状（2026-10-23）**：左上半段（规则真相源 ①~③）与快照读侧（④ resolve / snapshots / bundle）已实现；
-core 侧消费接线、事件回传、熔断、监控未落地，未落项逐条登记在 `docs/TASKS.md` QT-42 施工记录。
+**现状（2026-10-24）**：左上半段（规则真相源 ①~③）与快照读侧（④ resolve / snapshots / bundle）已实现，
+持久化有 Memory 与 PG（事务边界见 ADR-0003）；core 侧消费接线、事件回传、熔断、监控未落地，
+未落项逐条登记在 `docs/TASKS.md` QT-42 施工记录。
 
 ## 2. 关键时序
 
@@ -75,7 +76,7 @@ core 侧消费接线、事件回传、熔断、监控未落地，未落项逐条
 | `version_hash` 与内容不一致（Store 层） | 内容寻址被破坏 | `ErrRevisionConflict`，拒绝写入；`UNIQUE (rule_id, version_hash)` 兜底 | ✅ |
 | 编辑基准过期 | 覆盖别人的修改 | 409 `revision_conflict`，要求重读 head | ✅ |
 | 未审批规则被当成生效版本 | 生产用上草稿 | 只有 `active_revision` 可达 runtime；`draft` 永不进快照 | ✅（状态机 + DDL CHECK） |
-| 并发写同一 rule_id | 丢更新 / 双 active | 当前进程内互斥锁串行；**接 PG 后必须换事务**（QT-42 未落项） | 🔶 |
+| 并发写同一 rule_id | 丢更新 / 双 active | Service 的读-改-写全部在 `Store.Tx` 内：PG 用 `SELECT ... FOR UPDATE` 行锁，Memory 用全量快照回滚；失败整笔回滚 | ✅（ADR-0003；`TestServiceApprove_RollsBackAllWritesOnFailure` / `TestMemoryTx_RollsBackAllWrites`） |
 | 快照 hash 与内容不符（写入 / 读取 / ParseBundle） | 内容寻址被破坏（缓存串号 / 内容被改） | `ErrSnapshotMismatch`，500 `internal` + 告警日志，fail-loud 不吞 | ✅（三处同检：`store.go` 写/读 + `ParseBundle`） |
 | 服务不可用 | 拿不到规则快照 | **拒绝开跑**（不许用默认限额） | ✅（resolve 侧：`no_approved_rules` / `snapshot_not_found` 拒绝；core 接线后由调用方执行） |
 | 规则被改但 run 里没记 hash | 结果不可复现 | `risk_rules_hash` 必写进结果 | ⛔ core 侧接线（F3） |
@@ -92,6 +93,7 @@ core 侧消费接线、事件回传、熔断、监控未落地，未落项逐条
 6. 每次写操作都有审计行，且审计顺序与状态迁移顺序一致（create / update / approve / deprecate）。✅
 7. 定义级 `CHECK ((status='active') = (active_revision IS NOT NULL))` 恒成立——新 draft 修订不清空 `active_revision`。✅
 8. `risk_rules_hash` 只由 active 快照内容派生（排序 + canonical params，不含 `created_at`）；钉住的历史 hash 永不失效、不回退 latest。✅ `TestSnapshotHash_IsContentAddressed` / `TestResolve_PinnedHashNeverFallsBack`
+9. 写路径的「读-改-写」全部在 `Store.Tx` 内；中途失败整笔回滚（Memory 与 PG 同语义）。✅ `TestMemoryTx_RollsBackAllWrites` / `TestServiceApprove_RollsBackAllWritesOnFailure`（ADR-0003）
 
 ## 5. 与契约文档的关系
 

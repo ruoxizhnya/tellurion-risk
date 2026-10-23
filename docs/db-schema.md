@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-23
-verified-by: QT-42 规则侧实装——DDL 与 internal/rule/ddl.go 逐表对表
+last-verified: 2026-10-24
+verified-by: QT-42 PG Store + risk.limits 建表——DDL 与 internal/rule/ddl.go 逐表对表
 ---
 
 # DB Schema — tellurion-risk
@@ -14,10 +14,10 @@ verified-by: QT-42 规则侧实装——DDL 与 internal/rule/ddl.go 逐表对�
 
 | 表 | 内容 | 现状 |
 |---|---|---|
-| `risk.rule_defs` | 规则定义（类型 / 参数归属 / 适用范围），`head_revision` 指向当前 head，`active_revision` 指向生效版本 | 🔶 DDL 已落（`internal/rule/ddl.go`），执行入口未接 |
-| `risk.rule_revisions` | 版本追加 + 审批状态（draft→approved→active→deprecated）+ `version_hash` | 🔶 同上 |
-| `risk.rule_snapshots` | run 前下发的规则快照（内容寻址；回测结果记 `risk_rules_hash`） | 🔶 DDL 已落 + Memory 读写（`internal/rule/snapshot.go` / `store.go`），执行入口未接 |
-| `risk.limits` | 账户 / 策略 / 标的级限额 | ⬜ |
+| `risk.rule_defs` | 规则定义（类型 / 参数归属 / 适用范围），`head_revision` 指向当前 head，`active_revision` 指向生效版本 | ✅ DDL + Memory/PG Store（2026-10-24） |
+| `risk.rule_revisions` | 版本追加 + 审批状态（draft→approved→active→deprecated）+ `version_hash` | ✅ 同上 |
+| `risk.rule_snapshots` | run 前下发的规则快照（内容寻址；回测结果记 `risk_rules_hash`） | ✅ DDL + Memory/PG 读写（`internal/rule/snapshot.go` / `store.go` / `internal/pgstore`） |
+| `risk.limits` | 账户 / 策略 / 标的级限额 | 🔶 DDL 已落（2026-10-24，仅建表；读写路径与端点未冻结） |
 | `risk.risk_events` | 裁决事件留痕（`OrderIntent` 注释已指向 `quant.risk_events`，**表未建**） | ⬜ X3c，迁入 `risk` |
 | `risk.circuit_orders` | 熔断指令下发记录（幂等） | ⬜ X3d |
 | `risk.audit_logs` | **规则与审批的操作审计**（谁改了哪条规则、谁批的） | 🔶 DDL 已落（**新表**，与现 `audit_logs` 无关、不复用——后者是 ADR-017 鉴权访问审计（`tellurion:pkg/auth` 写入），留 core） |
@@ -29,11 +29,15 @@ verified-by: QT-42 规则侧实装——DDL 与 internal/rule/ddl.go 逐表对�
 - `rule_revisions`：`PRIMARY KEY (rule_id, revision)` + `UNIQUE (rule_id, version_hash)`；
   `CHECK ((status IN ('approved','active','deprecated')) = (approved_at IS NOT NULL))` —— 未批准过的 revision 不得带批准时间。
 - `audit_logs`：`seq BIGSERIAL PRIMARY KEY`；`action CHECK IN ('create','update','approve','deprecate')`；**不设更新路径**（只追加）。
-- `rule_snapshots`：`PRIMARY KEY (risk_rules_hash)`；
-  `CHECK (risk_rules_hash ~ '^[0-9a-f]{64}$')`；
+- `rule_snapshots`：`PRIMARY KEY (risk_rules_hash)`;
+  `CHECK (risk_rules_hash ~ '^[0-9a-f]{64}$')`;
   `CHECK (jsonb_typeof(rules) = 'array' AND jsonb_array_length(rules) > 0)` —— 快照至少含一条生效规则。
   应用层双头护栏：写入与读取都重新 derive hash 比对（`ErrSnapshotMismatch` fail-loud）；
   同 hash 重复写 = no-op，同 hash 不同内容 = 拒收（不许静默覆盖，docs/ARCHITECTURE.md §9.5）。
+- `limits`（2026-10-24 建表）：`PRIMARY KEY (scope, subject, limit_key)`；
+  `CHECK (scope IN (...))` 与 Go 侧冻结枚举同源；`CHECK ((scope = 'global') = (subject = ''))` ——
+  `global` 无主体，其余 scope 必须给主体（账户 id / 策略 id / 标的代码）。
+  本切片只建表，读写路径与端点未冻结（登记在 `docs/TASKS.md` QT-42 未落项）。
 - `version_hash` 由 `rule_id + revision + scope + type + 规范化 params` 派生（域 `tellurion.risk_rule_version_hash.v1`），
   不含 `description` / `status` / 时间（见 `docs/adr/0002-规则版本-hash-与审批状态机的裁决.md`）。
 
@@ -70,7 +74,8 @@ verified-by: QT-42 规则侧实装——DDL 与 internal/rule/ddl.go 逐表对�
 
 - **执行机制已定（取向 ①，2026-10-23）**：Go 数组 + 启动执行、幂等、无版本表 —— 语句本体在
   `internal/rule/ddl.go` 的 `migrationStatements`，由 `rule.Migrations()` 交出副本。
-  **迁移执行入口（PG 连接 + 启动时跑）与 PG Store 尚未接线**（当前只有 `Memory` Store；登记在 `docs/TASKS.md` QT-42 未落项）。
+  **执行入口（2026-10-24）**：`internal/pgstore.Migrate` 按序执行该数组；`cmd/riskservice` 在 DSN 非空时
+  启动即 Ping → Migrate → 装配 PG Store（空 DSN 退回 Memory 并告警）。
   取向 ② 的重估条件不变（服务数 ≥3 或出现"必须先降级"需求）。
 - 不另建 `migrations/*.sql`：本仓 DDL 的唯一真相是 `internal/rule/ddl.go` 的 Go 数组；`.sql` 会把真相劈成两份。
   （本节原先的「迁移文件只放 `migrations/`」随取向 ① 作废。）
@@ -93,10 +98,12 @@ verified-by: QT-42 规则侧实装——DDL 与 internal/rule/ddl.go 逐表对�
   **不含 `created_at`**——同一内容永远同一 hash，缓存按 hash 永不失效；hash 算法变更 = 域标签 v2，全历史作废。
 - **审计表不复用 core 的 `audit_logs`（2026-10-23）**：`risk.audit_logs` 是新表，只记人与规则/审批的操作；
   core 的 `audit_logs` 是 ADR-017 鉴权访问审计，两者语义不同，不做迁移合并。
+- **PG 事务边界（2026-10-24）**：Service 的读-改-写全部经 `Store.Tx`；PG 事务内 `GetDefinition` 用
+  `SELECT ... FOR UPDATE` 行锁，Memory 用「全量状态快照 + 失败还原」模拟同一回滚语义。
+  Service 不再持有进程内互斥锁。裁决见 `docs/adr/0003-pg-store-与事务边界.md`。
 
 ## 6. 待定
 
 - `risk_events` 的写入路径（服务侧异步收集 vs 内核回调）未定稿，见 design §4 与 ADR-D20（R2）。
 - **审计 actor 来源**：鉴权面（QT-50 ④）未落，当前审计 `actor` 为空串；角色矩阵与 actor 注入方式随 QT-50 定（R4）。
-- **PG 实现的事务边界**：Service 用进程内锁串行「读-改-写」；接 PG 后这把锁必须换成事务，
-  否则两个进程并发写同一 rule_id 会丢更新（登记为 QT-42 未落项）。
+- **`risk.limits` 的读写路径**：表已建，但限额的读取口径（快照附带 / 独立端点）与写入端点未冻结（R2 相关）。

@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-23
-verified-by: QT-42 规则侧实装包布局（internal/rule · internal/httpapi · cmd/riskservice）
+last-verified: 2026-10-24
+verified-by: QT-42 PG Store 实装（internal/rule · internal/pgstore · internal/httpapi · cmd/riskservice）
 ---
 
 # 架构 — tellurion-risk
@@ -38,20 +38,21 @@ verified-by: QT-42 规则侧实装包布局（internal/rule · internal/httpapi 
 
 ```
 cmd/
-  riskservice/       进程入口：rule.New(Memory Store) + httpapi.New + http.Server（127.0.0.1:8086）
+  riskservice/       进程入口：PG（-dsn / RISK_DATABASE_URL，启动时 Migrate）或 Memory → rule.Service + httpapi
 internal/
   rule/              领域核心：RuleType/Scope/Status 冻结枚举、Revision 校验与参数规范化、
                       VersionHash、快照内容寻址（Snapshot / SnapshotHash / ParseBundle）、
-                      Store 端口 + Memory 实现、Migrations()（8 条幂等 DDL）、
+                      Store 端口（含 Tx 事务语义）+ Memory 实现、Migrations()（9 条幂等 DDL）、
                       Service（Create / Update / Approve / List / Audit / Resolve / GetSnapshot）
+  pgstore/           PG 实现：rule.Store（Tx = 数据库事务 + FOR UPDATE 行锁）+ Migrate
   httpapi/           传输层：标准库 http.ServeMux 的 4 个规则端点 + 3 个快照端点 + 严格解码 + wire code 映射
 doc.go               仓级包文档（无代码）
 ```
 
-**依赖方向单一**：`cmd/riskservice` → `internal/httpapi` → `internal/rule`；`internal/rule` 不 import 传输层。
-**未落**：PG Store 与迁移执行入口、事件（X3c）、熔断（X3d）、monitor 三端点（U7 未裁）、鉴权、
-core 侧 RiskPolicy 消费接线（F3）。
-清单见 `docs/TASKS.md` QT-42 施工记录。
+**依赖方向单一**：`cmd/riskservice` → `internal/httpapi` / `internal/pgstore` → `internal/rule`；
+`internal/rule` 不 import 传输层，也不 import `database/sql`（事务边界由 Store 端口表达，见 ADR-0003）。
+**未落**：事件（X3c）、熔断（X3d）、monitor 三端点（U7 未裁）、鉴权、
+core 侧 RiskPolicy 消费接线（F3）。清单见 `docs/TASKS.md` QT-42 施工记录。
 
 ## 4. 三份契约（功能的边界就在这三份文件里）
 
@@ -70,13 +71,16 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
         └──(HTTP 异步)──► 事件回传
 ```
 
-- 规则侧首批实装**零跨仓依赖**：版本 hash 与枚举都在 `internal/rule` 自己定义（域标签风险见 `db-schema.md` §5）。
+- 规则侧**无跨仓依赖**：版本 hash 与枚举都在 `internal/rule` 自己定义（域标签风险见 `db-schema.md` §5）。
+- 唯一第三方依赖是 PostgreSQL 驱动 `github.com/jackc/pgx/v5`（仅在进程入口注册驱动，见 ADR-0003）；
+  领域包只依赖 `database/sql` 的抽象（`internal/pgstore`），不感知驱动实现。
 - 契约（`RuleSnapshot` / `RuleEvent` / `BreakerCommand`）要等 X3b/X3c 出现第二个 Go 使用方后才按 ADR-0001 ① 迁 contracts。
 
 ## 6. 关键决策
 
 - [`adr/0001-两层结构-真相源出仓裁决留内核.md`](adr/0001-两层结构-真相源出仓裁决留内核.md)
 - [`adr/0002-规则版本-hash-与审批状态机的裁决.md`](adr/0002-规则版本-hash-与审批状态机的裁决.md)
+- [`adr/0003-pg-store-与事务边界.md`](adr/0003-pg-store-与事务边界.md)
 
 ## 7. 非目标（明确不做）
 
@@ -89,8 +93,8 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| X3a | 规则定义 + 版本 + 审批状态机 + 审计 | 🔶 已实装（`internal/rule` + `internal/httpapi` 4 端点，Memory Store）；PG Store / 迁移执行 / 鉴权未落 |
-| X3b | 快照 + `resolve` / `bundle` | 🔶 已实装（2026-10-23：`risk.rule_snapshots` DDL + 快照内容寻址 + `resolve`/`snapshots/{hash}`/`bundle` 三端点 + `rule.ParseBundle` 进程内边界，Memory Store）；PG Store / core 侧消费接线（F3）未落 |
+| X3a | 规则定义 + 版本 + 审批状态机 + 审计 | 🔶 已实装（`internal/rule` + `internal/httpapi` 4 端点；PG Store / 迁移执行 / 事务边界已落（2026-10-24，ADR-0003）；鉴权未落） |
+| X3b | 快照 + `resolve` / `bundle` | 🔶 已实装（`risk.rule_snapshots` DDL + 快照内容寻址 + `resolve`/`snapshots/{hash}`/`bundle` 三端点 + `rule.ParseBundle` 进程内边界，Memory/PG 双实现）；core 侧消费接线（F3）未落 |
 | X3c | 事件回传 + 监控聚合 | ⬜ |
 | X3d | 熔断指令（幂等） | ⬜ |
 
@@ -159,7 +163,7 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 
 | 写入点 | 今天 | 目标口径 | 幂等 / 失败语义 |
 |---|---|---|---|
-| `risk.rule_snapshots` | 🔶 已实装（X3b）：Memory Store 读写 + DDL 已落（执行入口未接）；写入 / 读取 / ParseBundle 三处重新 derive hash 校验 | 内容寻址、不可变；写入时以重新 derive 的 hash 为准（样板 `pkg/storage/factor_definition.go:94-97`：库里存的 hash 与 derive 值不符即拒） | 同 hash 重复写入 = no-op；同 hash 不同内容 = **fail-loud**（不许 `ON CONFLICT DO NOTHING` 吞掉） |
+| `risk.rule_snapshots` | 🔶 已实装（X3b）：Memory / PG Store 读写 + DDL 已落（启动时执行）；写入 / 读取 / ParseBundle 三处重新 derive hash 校验 | 内容寻址、不可变；写入时以重新 derive 的 hash 为准（样板 `pkg/storage/factor_definition.go:94-97`：库里存的 hash 与 derive 值不符即拒） | 同 hash 重复写入 = no-op；同 hash 不同内容 = **fail-loud**（不许 `ON CONFLICT DO NOTHING` 吞掉） |
 | `risk.risk_events` | 待建；`OrderIntent` 注释指向 `quant.risk_events`（`pkg/risk/interfaces.go:7/31`） | 唯一 owner = 本仓；去重键 `(run_id, order_id, event_seq)` | 事件回传允许延迟、**不允许丢**；部分失败 → `207` + 逐条明细 |
 | `risk.circuit_orders` | 待建 | `breaker_id` UNIQUE；记录下发与执行状态 | 同键同载荷 → `already_applied`；同键不同载荷 → `409` |
 | `risk.audit_logs` | 待建（**新表**） | 规则 / 审批 / 熔断的人操作留痕 | **不迁、不复用** core 的 `audit_logs`：后者是 ADR-017 鉴权访问审计（`pkg/storage/postgres.go:335` DDL、`pkg/auth/auth.go:492` `RecordAudit` 写入），语义不同（`docs/db-schema.md` §1 注） |

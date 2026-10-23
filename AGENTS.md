@@ -6,12 +6,14 @@
 
 风控规则的**真相源**：规则定义、限额表、聚合监控与熔断。**同步裁决（`RiskPolicy`）留在 core 进程内**。
 
-**状态**：🔶 首批实装（QT-42 X3a 规则侧 + X3b 快照侧）。规则定义 / 版本 / 审批 / 审计 + 快照内容寻址 /
-`resolve` / `snapshots/{hash}` / `bundle` 三端点 / 进程内 `ParseBundle` 边界。事件（X3c）、熔断（X3d）、监控（U7 未裁）尚未落地。
+**状态**：🔶 首批实装（QT-42 X3a 规则侧 + X3b 快照侧 + PG Store 事务边界）。规则定义 / 版本 / 审批 / 审计 +
+快照内容寻址 / `resolve` / `snapshots/{hash}` / `bundle` 三端点 / 进程内 `ParseBundle` 边界。事件（X3c）、
+熔断（X3d）、监控（U7 未裁）尚未落地。
 
-**本仓今天的实现**（`internal/rule` / `internal/httpapi` / `cmd/riskservice`）：规则 4 端点 + 快照 3 端点 +
-审批状态机 + 内容寻址 `version_hash` / `risk_rules_hash` + 审计 + `ParseBundle`（进程内 RiskPolicy 输入形状）；
-持久化只有 `Memory` Store，PG DDL 在 `internal/rule/ddl.go` 但**执行入口未接**；
+**本仓今天的实现**（`internal/rule` / `internal/pgstore` / `internal/httpapi` / `cmd/riskservice`）：规则 4 端点 +
+快照 3 端点 + 审批状态机 + 内容寻址 `version_hash` / `risk_rules_hash` + 审计 + `ParseBundle`（进程内 RiskPolicy
+输入形状）；持久化有 `Memory` 与 PG（`internal/pgstore`，启动时执行 `rule.Migrations()` 幂等 DDL）；
+Service 的读-改-写经 `Store.Tx`（PG 行锁）完成，不再用进程内互斥锁；
 core 侧消费接线未做（run 的 `risk_rules_hash` 生产者仍写空串，F3）。
 
 **留在 core 的实现**：`core:pkg/risk`（`RiskManager` / `RegimeDetector` / `StopLossChecker` / `CheckOrder`）+ `core:pkg/compliance`（异常交易 / 减持 / 大额报送）+ `core:pkg/alert`（6 检测器 + 通道）。
@@ -54,6 +56,7 @@ go test ./...
 |---|---|---|
 | `github.com/ruoxizhnya/tellurion-contracts` | 未引入（`v0.1.0` 已发 tag） | `RiskPolicy` 相关 DTO 只认契约；当前规则侧零跨仓依赖，接入时 pin tag 不 pin 伪版本 |
 | `github.com/ruoxizhnya/tellurion-kit` | 未引入（`v0.1.0` 已发 tag） | 日志 / HTTP / 存储连接；HTTP 暂用标准库 `net/http` |
+| `github.com/jackc/pgx/v5` | `v5.7.5` | PostgreSQL 驱动。仅 `cmd/riskservice` 空白导入 `stdlib` 注册 `database/sql` 驱动；`internal/pgstore` 只用 `database/sql`，不直接依赖 pgx API（`pgconn` 仅用于唯一约束错误识别） |
 
 > 跨仓依赖**只认版本号**（伪版本或 tag），不认源码路径。契约变更走 `tellurion-contracts` 的发布，不走"顺手改一下"。
 
