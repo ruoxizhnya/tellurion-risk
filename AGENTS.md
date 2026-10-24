@@ -6,19 +6,23 @@
 
 风控规则的**真相源**：规则定义、限额表、聚合监控与熔断。**同步裁决（`RiskPolicy`）留在 core 进程内**。
 
-**状态**：🔶 首批实装（QT-42 X3a 规则侧 + X3b 快照侧 + PG Store 事务边界 + X3c 事件回传 + X3d 熔断指令）。
+**状态**：🔶 首批实装（QT-42 X3a 规则侧 + X3b 快照侧 + PG Store 事务边界 + X3c 事件回传与监控 + X3d 熔断指令）。
 规则定义 / 版本 / 审批 / 审计 + 快照内容寻址 / `resolve` / `snapshots/{hash}` / `bundle` 三端点 /
-进程内 `ParseBundle` 边界 + `POST /events`（批量、去重键、207）+ `POST /breakers`（幂等键、409）。
-监控（U7 未裁）尚未落地。
+进程内 `ParseBundle` 边界 + `POST /events`（批量、去重键、207）+ `POST /breakers`（幂等键、409）+
+`monitor/exposure` / `alerts` / `evaluate` 三端点（**只读 `risk_events` 聚合/报表**，检测器不搬出 core；
+三端点强制鉴权闸，未装配 Authorizer 时 503 拒绝而非放行）。
 
 **本仓今天的实现**（`internal/rule` / `internal/event` / `internal/breaker` / `internal/pgstore` /
 `internal/httpapi` / `cmd/riskservice`）：规则 4 端点 + 快照 3 端点 + 事件 1 端点 + 熔断 1 端点 +
-审批状态机 + 内容寻址 `version_hash` / `risk_rules_hash` + 审计 + `ParseBundle`（进程内 RiskPolicy 输入形状）+
-事件去重落库 + 熔断幂等落库；持久化有 `Memory` 与 PG（`internal/pgstore`，启动时执行
+监控 3 端点 + 审批状态机 + 内容寻址 `version_hash` / `risk_rules_hash` + 审计 +
+`ParseBundle`（进程内 RiskPolicy 输入形状）+ 事件去重落库 + 熔断幂等落库 + `risk_events` 聚合读
+（`event.Reader`，Memory/PG）；持久化有 `Memory` 与 PG（`internal/pgstore`，启动时执行
 `rule.Migrations()` 幂等 DDL）；Service 的读-改-写经 `Store.Tx`（PG 行锁）完成，不再用进程内互斥锁；
 core 侧消费接线未做（run 的 `risk_rules_hash` 生产者仍写空串，F3）。
+线上 monitor/* 因 QT-50 ④ 的 `Authorizer` 未接而**恒 503**（有意的 fail-closed）。
 
-**留在 core 的实现**：`core:pkg/risk`（`RiskManager` / `RegimeDetector` / `StopLossChecker` / `CheckOrder`）+ `core:pkg/compliance`（异常交易 / 减持 / 大额报送）+ `core:pkg/alert`（6 检测器 + 通道）。
+**留在 core 的实现**：`core:pkg/risk`（`RiskManager` / `RegimeDetector` / `StopLossChecker` / `CheckOrder`）+ `core:pkg/compliance`（异常交易 / 减持 / 大额报送）+ `core:pkg/alert`（**6 个检测器 + 进程内 `alertLoop`**）。
+**U7 已裁（2026-10-24）**：告警的**通道编排与报送**归本仓（`monitor/exposure` / `alerts` / `evaluate` 三端点）；**检测器不搬出 core**——逐 bar / 逐笔裁决仍在本进程内，禁止远程调用。
 
 ## 2. 构建 / 测试（必须单仓可跑）
 

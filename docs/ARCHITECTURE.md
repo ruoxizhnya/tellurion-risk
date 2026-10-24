@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: QT-42 X3d 熔断指令实装（internal/rule · internal/event · internal/breaker · internal/pgstore · internal/httpapi · cmd/riskservice）
+verified-by: QT-42 监控 3 端点（internal/event 聚合读 · internal/httpapi 鉴权闸 · ADR-0004）
 ---
 
 # 架构 — tellurion-risk
@@ -32,7 +32,7 @@ verified-by: QT-42 X3d 熔断指令实装（internal/rule · internal/event · i
 | 规则管理 | 定义 / 版本 / 审批状态机 | 不执行裁决 |
 | 快照 | 内容寻址、永不失效 | 不解析规则语义 |
 | 事件收集 | 异步批量落库 | 不在热路径 |
-| 监控 | 敞口 / 告警 / 合规检测 | 不阻断下单（阻断靠熔断指令） |
+| 监控 | 敞口 / 告警 / 报表评估（只读 `risk_events` 聚合） | 不运行检测器（检测器留 core）、不阻断下单（阻断靠熔断指令） |
 
 ## 3.1 包布局（现状，2026-10-23）
 
@@ -42,19 +42,21 @@ cmd/
 internal/
   rule/              领域核心：RuleType/Scope/Status 冻结枚举、Revision 校验与参数规范化、
                       VersionHash、快照内容寻址（Snapshot / SnapshotHash / ParseBundle）、
-                      Store 端口（含 Tx 事务语义）+ Memory 实现、Migrations()（11 条幂等 DDL）、
+                      Store 端口（含 Tx 事务语义）+ Memory 实现、Migrations()（12 条幂等 DDL）、
                       Service（Create / Update / Approve / List / Audit / Resolve / GetSnapshot）
-  pgstore/           PG 实现：rule.Store / event.Store / breaker.Store（Tx = 数据库事务 + FOR UPDATE 行锁）+ Migrate
-  event/             X3c 事件：wire Event / 逐条校验 / 去重键 + Memory 实现 / Service.Ingest
+  pgstore/           PG 实现：rule.Store / event.Store / event.Reader / breaker.Store（Tx = 数据库事务 + FOR UPDATE 行锁）+ Migrate
+  event/             X3c 事件：wire Event / 逐条校验 / 去重键 + Memory 实现 / Service.Ingest；
+                     监控聚合：Reader 端口 + Memory/PG 读取 + exposure / alerts / evaluate 投影（ADR-0004）
   breaker/           X3d 熔断：wire Command / 冻结动作枚举 / 幂等键 + Memory 实现 / Service.Apply
-  httpapi/           传输层：标准库 http.ServeMux 的 4 个规则端点 + 3 个快照端点 + 1 个事件端点 + 1 个熔断端点 + 严格解码 + wire code 映射
+  httpapi/           传输层：标准库 http.ServeMux 的 4 个规则端点 + 3 个快照端点 + 1 个事件端点 +
+                     1 个熔断端点 + 3 个监控端点（monitor/* 过 Authorizer 闸）+ 严格解码 + wire code 映射
 doc.go               仓级包文档（无代码）
 ```
 
 **依赖方向单一**：`cmd/riskservice` → `internal/httpapi` / `internal/pgstore` → `internal/rule` / `internal/event` / `internal/breaker`；
 `internal/rule` 不 import 传输层，也不 import `database/sql`（事务边界由 Store 端口表达，见 ADR-0003）。
-**未落**：monitor 三端点（U7 未裁）、鉴权、
-core 侧 RiskPolicy 消费接线（F3）。清单见 `docs/TASKS.md` QT-42 施工记录。
+**未落**：`Authorizer` 实现（QT-50 ④，monitor/* 因此线上恒 503）、外部推送通道、
+core `alertLoop` 把告警投 `POST /events`、core 侧 RiskPolicy 消费接线（F3）。清单见 `docs/TASKS.md` QT-42 施工记录。
 
 ## 4. 三份契约（功能的边界就在这三份文件里）
 
@@ -83,6 +85,7 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 - [`adr/0001-两层结构-真相源出仓裁决留内核.md`](adr/0001-两层结构-真相源出仓裁决留内核.md)
 - [`adr/0002-规则版本-hash-与审批状态机的裁决.md`](adr/0002-规则版本-hash-与审批状态机的裁决.md)
 - [`adr/0003-pg-store-与事务边界.md`](adr/0003-pg-store-与事务边界.md)
+- [`adr/0004-监控三端点是聚合与报送而非检测.md`](adr/0004-监控三端点是聚合与报送而非检测.md)
 
 ## 7. 非目标（明确不做）
 
@@ -97,7 +100,7 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 |---|---|---|
 | X3a | 规则定义 + 版本 + 审批状态机 + 审计 | 🔶 已实装（`internal/rule` + `internal/httpapi` 4 端点；PG Store / 迁移执行 / 事务边界已落（2026-10-24，ADR-0003）；鉴权未落） |
 | X3b | 快照 + `resolve` / `bundle` | 🔶 已实装（`risk.rule_snapshots` DDL + 快照内容寻址 + `resolve`/`snapshots/{hash}`/`bundle` 三端点 + `rule.ParseBundle` 进程内边界，Memory/PG 双实现）；core 侧消费接线（F3）未落 |
-| X3c | 事件回传 + 监控聚合 | 🔶 事件回传已实装（`internal/event` + `POST /events`：批量、去重键、207 partial_failure）；监控聚合 ⛔ U7 未裁 |
+| X3c | 事件回传 + 监控聚合 | ✅ 已实装（2026-10-24：`internal/event` + `POST /events` 批量/去重键/207；监控 3 端点只读 `risk_events` 聚合/报表，ADR-0004；鉴权闸 fail-closed） |
 | X3d | 熔断指令（幂等） | 🔶 已实装（`internal/breaker` + `POST /breakers` + `risk.circuit_orders`：`breaker_id` 幂等键、200 applied/already_applied、409 载荷冲突）；执行方与 ACK ⛔ 升格 ADR |
 
 ## 9. 接口对表（M8 前置 · ✅ 2026-10-22）
@@ -115,7 +118,7 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 | F2 | **`OrderIntent` / `Verdict` 只有一个 Go 使用方**；设计 §5 把它们画进 contracts，按 ADR-0001 今天不成立。 | `pkg/risk/interfaces.go:29/46`；`pkg/live/interfaces.go:34` 是 **core 内别名**；contracts 仓没有 risk 包（`tellurion-contracts:docs/API.md:134` 只登记 `domain.RiskManager`）。 | port 留 core；X3b 冻结的是 **wire JSON**（字段名 / 类型），不是 Go 类型。只有出现第二个 Go 使用方（本仓服务端也 import 同一 DTO）才按 ADR-0001 ① 迁 contracts。`TestOrderIntentFields`（`pkg/risk/interfaces_compliance_test.go:126`）用反射冻结字段集，加字段要同步它。 |
 | F3 | **`risk_rules_hash` 的写入路径已就位（QT-63，2026-10-22），但今天恒为空。** | `pkg/backtest/provenance.go:194`（生产者显式填 `RiskRulesHash: ""`）、`:220`（映射进记录）；`pkg/storage/run_provenance.go:33`（`RunProvenanceRecord`）/`:56`（DDL）/`:86`（`SaveRunProvenance`）/`:126`（`GetRunProvenance`）；`pkg/storage/postgres.go:1189-1193`（Migration 056 收编）；`pkg/backtest/contracts/provenance.go:174`（字段）、`:216`（无条件 `c.Str` 进 canonical）。 | QT-42 ⑤「结果能记 `risk_rules_hash`」**不再依赖 QT-63**：表与写入路径都已落，只差 X3b 把空串换成真值。空串**也参与** canonical hash ⇒ 开启风控分量后，同参 run 的 `run_spec_hash` 会变——这是**语义变更**（hash 域不变），不是 bug；跨开启点的 hash 不可比，双跑对拍必须锁同一快照。 |
 | F4 | **`/api/risk/*` 在 core :8085 已被四条进程内端点占用**。 | `cmd/analysis/handlers_risk.go:50-57`；`docs/openapi.yaml:1605/1629/1657/1696`；这些端点背后是 in-process `*risk.RiskManager`（`handlers_risk.go:24-32`），回测引擎从不 HTTP 调自己。 | 本仓 HTTP 面若也挂 `/api/risk/*`，升格时**必须**按最长前缀划所有权；本仓**永不接管**这四条（它们是进程内 RiskManager 的调试面）。命名待裁 **R1**。 |
-| F5 | **M5：六仓 ≠ 六进程；U7（compliance / alert 归属）未裁**。 | `tellurion:docs/design/qt-decoupling/repo-inventory.md` §1.2 与 §3.1 U7。 | 本仓今天只到「仓内实现 + core 侧 port」，**不升格容器**；C 组是升格时的目标形状。监控三端点（`monitor/exposure` / `alerts` / `evaluate`）**形状不冻结**——取决于 U7（六个检测器留 core vs 迁出）。熔断指令的**执行方**同样等升格 ADR。 |
+| F5 | **M5：六仓 ≠ 六进程；U7（compliance / alert 归属）** 已裁（2026-10-24）。 | `tellurion:docs/design/qt-decoupling/repo-inventory.md` §1.2 与 §3.1 U7；本仓 `docs/TASKS.md` U7 裁决条。 | 本仓今天只到「仓内实现 + core 侧 port」，**不升格容器**。U7 定为「拆分」：6 个检测器 + 减持 + 大额报送留 core 进程内 `alertLoop`，告警的通道编排与报送归本仓；`monitor/*` 三端点按此冻结为**只读 `risk_events` 的聚合/报表**（ADR-0004）。熔断指令的**执行方**仍等升格 ADR。 |
 
 ### 9.2 A 组 · 进程内 port（同步，零网络）
 
@@ -157,16 +160,16 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 | `GET /api/risk/snapshots/{hash}/bundle` | → `200`（canonical snapshot JSON） | `404 snapshot_not_found`；内容重算 hash ≠ 路径 hash ⇒ `500` + 告警（缓存串号） | 强幂等；原地改内容是**绝对禁止项**（内容变 ⇒ 必然是新 hash）。✅ 已实装（X3b；`rule.ParseBundle` 双头 derive 校验） |
 | `POST /api/risk/events` | `{events:[RuleEvent...]}` → `200 {accepted, duplicates}` 或 `207 {accepted, duplicates, failed:[{index, code, message}], code:"partial_failure"}` | `400 invalid_params`（整批不可解析 / 空数组）；`207 partial_failure`（逐条） | 去重键 `run_id + order_id + event_seq`；重试只重发 `failed`。加字段 = MINOR。✅ 已实装（X3c） |
 | `POST /api/risk/breakers` | `{breaker_id, action, scope, reason, ts}` → `200 {breaker_id, status:"applied"\|"already_applied"}` | `400 invalid_params`（未知 action / scope）；`409 idempotency_conflict`（同键不同载荷） | 幂等键 `breaker_id`；载荷身份 = action + scope + reason（`ts` 不参与）；同键同载荷 → `already_applied`。✅ 已实装（X3d） |
-| `GET /api/risk/monitor/exposure` | ⛔ **F5 / U7 未裁，形状不冻结** | — | 今天 core 的对应面不是它：`/api/compliance/*` + `/api/alerts/*`（`cmd/analysis/handlers_compliance.go:94-104`、`cmd/analysis/handlers_alert.go:138-142`）；迁移边界等 U7 |
-| `GET /api/risk/monitor/alerts` | ⛔ 同上 | — | 同上 |
-| `POST /api/risk/monitor/evaluate` | ⛔ 同上 | — | 同上 |
+| `GET /api/risk/monitor/exposure` | `?from=&to=&group_by=symbol\|account\|strategy&run_id=&symbol=&verdict=` → `200 {window, group_by, source, events, unpriced_events, unsigned_events, totals, groups[]}` | `400 invalid_params`（窗口非法 / 超 7 天 / >5000 事件 / group_by 非法）；`401/403`（鉴权）；`503 auth_unavailable` | 只读；只读 `risk_events`；`verdict=alert` 不参与；缺字段计 `unpriced_events`，不补零。✅ 2026-10-24（ADR-0004） |
+| `GET /api/risk/monitor/alerts` | `?from=&to=&severity=&rule=&run_id=&symbol=&limit=` → `200 {window, source, alerts[], count, truncated, invalid_events}` | `400 invalid_params`；`401/403`；`503` | 只读；`verdict=alert` 的 payload 投影；非法投影计 `invalid_events`；按 ts 倒序。✅ 2026-10-24 |
+| `POST /api/risk/monitor/evaluate` | `{from?,to?,run_id?,rule?,symbol?,min_severity?,limit?}` → `200 {evaluated_at, window, source, detection:"outside_process", criteria, alerts[], summary, invalid_events}` | `400 invalid_params`（严格解码 / 严重度非法 / 截断）；`401/403`；`503` | 只读、不运行检测器、不写库；`min_severity` 缺省 `info`；汇总截断即 400。✅ 2026-10-24 |
 
 ### 9.5 D 组 · 写入口径（事件 / 熔断 / 审计 / 留痕）
 
 | 写入点 | 今天 | 目标口径 | 幂等 / 失败语义 |
 |---|---|---|---|
 | `risk.rule_snapshots` | 🔶 已实装（X3b）：Memory / PG Store 读写 + DDL 已落（启动时执行）；写入 / 读取 / ParseBundle 三处重新 derive hash 校验 | 内容寻址、不可变；写入时以重新 derive 的 hash 为准（样板 `pkg/storage/factor_definition.go:94-97`：库里存的 hash 与 derive 值不符即拒） | 同 hash 重复写入 = no-op；同 hash 不同内容 = **fail-loud**（不许 `ON CONFLICT DO NOTHING` 吞掉） |
-| `risk.risk_events` | 🔶 已实装（X3c）：`internal/event` + Memory/PG 写入 + DDL 已落（启动时执行） | 唯一 owner = 本仓；去重键 `(run_id, order_id, event_seq)`；`raw` 保留事件原文 | 事件回传允许延迟、**不允许丢**；整批原子写入；部分失败 → `207` + 逐条明细 |
+| `risk.risk_events` | 🔶 已实装（X3c）：`internal/event` + Memory/PG 写入 + DDL 已落（启动时执行）；读侧已实装（2026-10-24）：`event.Reader` 供 monitor/* 聚合 | 唯一 owner = 本仓；去重键 `(run_id, order_id, event_seq)`；`raw` 保留事件原文；监控按 `event_ts` 窗口只读 | 事件回传允许延迟、**不允许丢**；整批原子写入；部分失败 → `207` + 逐条明细 |
 | `risk.circuit_orders` | 🔶 已实装（X3d）：`internal/breaker` + Memory/PG 写入 + DDL 已落 | `breaker_id` UNIQUE；记录下发与执行状态（今天只写 `applied`） | 同键同载荷 → `already_applied`；同键不同载荷 → `409` |
 | `risk.audit_logs` | 待建（**新表**） | 规则 / 审批 / 熔断的人操作留痕 | **不迁、不复用** core 的 `audit_logs`：后者是 ADR-017 鉴权访问审计（`pkg/storage/postgres.go:335` DDL、`pkg/auth/auth.go:492` `RecordAudit` 写入），语义不同（`docs/db-schema.md` §1 注） |
 | `quant.run_provenance.risk_rules_hash` | 表与写入路径已落（QT-63），生产者写空串（F3） | X3b 把空串换成真值；只存「输入身份」，不存 status | 同一 `run_id` 写不同 hash ⇒ fail-loud（QT-63 ④-⑦） |
@@ -174,8 +177,8 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 ### 9.6 E 组 · 版本策略汇总（QT-19 口径）
 
 - **frozen（改 = breaking + ADR）**：`RiskEngine` 四方法签名；`OrderIntent` / `Verdict` 的 wire 字段名与类型；`Verdict` 零值 = 拒绝；`risk_rules_hash` 的算法与域标签。
-- **stable（改 = MINOR + CHANGELOG；语义变更 = MAJOR / ADR）**：既有端点路径与错误码；`RuleSnapshot` / `RuleEvent` / `BreakerCommand` 的字段集（加字段 MINOR，改名 / 删字段 breaking）。
-- **evolving（⛔ 冻结前不实现）**：`monitor/*` 三端点（U7）；熔断指令的**执行方**与 ACK（升格 ADR）。
+- **stable（改 = MINOR + CHANGELOG；语义变更 = MAJOR / ADR）**：既有端点路径与错误码；`RuleSnapshot` / `RuleEvent` / `BreakerCommand` 的字段集（加字段 MINOR，改名 / 删字段 breaking）；监控三端点的响应字段与 `payload` 投影字段（加字段 MINOR）。
+- **evolving（⛔ 冻结前不实现）**：熔断指令的**执行方**与 ACK（升格 ADR）；监控的外部推送通道（webhook / 消息平台）与按节流策略的报送。
 - **规则类型枚举**：新增类型 = MINOR，但**旧读者必须 fail-closed 拒收未知类型**；改既有类型的语义 = breaking（历史 `risk_rules_hash` 的可比性失效）。
 - **快照格式**：新格式必须保留旧格式读取器（否则历史回测不可复现，`docs/api-schema.md` §4）。
 - **路径**：只增不删；废弃走 `Deprecated` 头 + 一个 MINOR 周期。
@@ -186,6 +189,6 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 |---|---|---|---|
 | R1 | `/api/risk/*` 前缀所有权（F4） | core 已有四条进程内端点；本仓目标面同前缀 | 建议：本仓只拥有 `rules` / `snapshots` / `resolve` / `events` / `breakers` / `monitor`；core 四条**永不迁入**；网关按最长前缀转发。拍板时机 = 升格 ADR |
 | R2 | 事件写入路径：服务侧异步收集 vs 内核回调 | `docs/db-schema.md` §5 未定稿 | 影响 C 组 `POST /events` 的重试与 `207` 语义；X3c 开工前拍 |
-| R3 | compliance / alert 归属（U7） | core `repo-inventory.md` §3.1 待裁 | 监控三端点形状冻结的前置；X3c 开工前拍 |
+| R3 | compliance / alert 归属（U7） | **已裁（2026-10-24）**：检测器留 core，通道编排与报送归本仓 | 形状已冻结为只读 `risk_events` 聚合/报表（ADR-0004）；生产侧接线（core `alertLoop` → `POST /events`）与外部推送通道仍待 |
 | R4 | 鉴权角色矩阵 | QT-50 ④ 统一面未落定 | 本文只冻结「默认 fail-closed，无凭证不服务」；具体角色名与 401/403 body 随 QT-50 对齐 |
 | R5 | `CheckOrder` 的输入校验细表 | 零实现（F1） | 本表冻结错误语义与总判据；逐字段校验清单在实现单里用测试钉住，不在此处预写 |

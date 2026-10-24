@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: QT-42 X3d 熔断指令实装（施工记录已落）
+verified-by: QT-42 监控 3 端点实装（施工记录已落）
 ---
 
 # TASKS — tellurion-risk 未完成项
@@ -10,6 +10,8 @@ verified-by: QT-42 X3d 熔断指令实装（施工记录已落）
 > 状态：`⬜ 待做` / `🔶 进行中` / `⛔ 阻塞（有未解除前置）` / `✅ 完成（附日期）`
 > 每张单六字段（① 目标 ② 上下文 ③ 要求 ④ 约束与非目标 ⑤ 验收 ⑥ 边界），判据见 `tellurion:AGENTS.md` §8.5。
 > 完成即标 ✅（附日期）并移入 `docs/archive/TASKS-YYYY-MM-DD-archived.md`；本文件只留未完成项。
+>
+> **U7 裁决（2026-10-24）**：compliance / alert 归属定为「拆分」——6 个检测器留 core 进程内 `alertLoop`，告警的**通道编排与报送**归本仓。本文所有「U7 未裁 / 本切片不做」的旧记录以此条为准；监控 3 端点（`monitor/exposure` / `alerts` / `evaluate`）**已于 2026-10-24 落地**（见下方施工记录；ADR-0004）。
 
 ---
 
@@ -199,11 +201,49 @@ verified-by: QT-42 X3d 熔断指令实装（施工记录已落）
 > 6. `rule_deprecated` 错误码不可达（冻结接口面无 deprecate 端点）。
 > 7. **core 侧消费接线（跨仓）**：`risk_rules_hash` 生产者仍写空串（F3）；不在本仓施工，已报协调者。
 
+> **施工记录（2026-10-24 · 监控 3 端点 / U7 拆分后）**
+>
+> 已交付（本仓，只读 `risk.risk_events`）：
+>
+> - `internal/event`：`Reader` / `Query` 只读端口（`Memory` 与 `pgstore` 双实现）；
+>   `Service.Exposure` / `Alerts` / `Evaluate` 纯聚合与投影。时间窗默认 24h、上限 7d；
+>   敞口 >5000 事件拒绝（不截断）；告警非法投影计 `invalid_events`；`evaluate` 不运行检测器、不写库，
+>   响应 `detection:"outside_process"`；汇总触到 limit 即 400（不建立在截断数据上）。
+> - `risk.risk_events`：新增 `risk_events_ts_idx (event_ts DESC)`（`internal/rule/ddl.go` 第 12 条）。
+> - `internal/pgstore`：`QueryEvents`（event_ts 窗口 + run/order/symbol/verdict 过滤 + 固定排序 +
+>   limit+1 探测截断）；可选 PG 腿 `RISK_TEST_DSN`（未配置时 skip，非假绿）。
+> - `internal/httpapi`：`GET /monitor/exposure`、`GET /monitor/alerts`、`POST /monitor/evaluate`；
+>   `Authorizer` 闸 **fail-closed**：未装配 → 503 `auth_unavailable`，无凭证 → 401，越权 → 403；
+>   闸只挂 monitor/*，其余端点行为不变。
+> - 测试：聚合口径（gross/net/long/short、unpriced/unsigned、分组排序）、告警投影/排序/过滤/截断、
+>   evaluate 只读与严重度过滤、窗口与上限 fail-closed、鉴权三态（503/401/403）、wire 空列表 `[]` 与 405。
+> - 文档同笔：`api-schema.md`（三端点形状 + 事件 payload 投影 + 错误码）、`db-schema.md`（索引与告警投影）、
+>   `dataflow.md`（监控读取时序/失败表/不变量）、`ARCHITECTURE.md` §3/§3.1/§8/§9、`AGENTS.md` §1、
+>   ADR-0004 + ADR 索引；X3c 施工序行与本记录同步。
+>
+> 验收口径：`go build ./... && go vet ./... && go test ./... -count=1` 全绿；破坏验证
+> （`requireAuth` 未装配时改成放行）→ `TestMonitor_NoAuthorizerFailsClosed` 红（200 vs 503），
+> 逐字节还原（`sha256` 一致）后绿。
+>
+> 未落项（本条**取代** X3d 记录的列表）：
+>
+> 1. **`Authorizer` 实现（QT-50 ④）**：monitor/* 在真机上恒 503（有意的 fail-closed，拒而不放行）。
+> 2. **告警生产侧接线（跨仓）**：core `alertLoop` 尚未把告警投到 `POST /events`；接线前
+>    `alerts` / `evaluate` 只会看到空集。
+> 3. **外部推送通道**（webhook / 消息平台）与节流：本切片只做 HTTP 报表，不主动推送。
+> 4. **敞口口径的生产侧约定**：`account` / `strategy` / `side` / `qty` / `price` / `notional` 需由生产者
+>    写入 `payload`；漏写按 `unpriced_events` / `unsigned_events` 显性计数，不补零。
+> 5. **熔断执行方与 ACK**：`circuit_orders.status` 今天只写 `applied`；随升格 ADR。
+> 6. **core 侧消费接线（跨仓）**：`risk_rules_hash` 生产者仍写空串（F3）。
+> 7. `risk.limits` 的读写路径与端点：表已建，读取口径未冻结。
+> 8. 审计读取无 HTTP 端点：`Store.ListAudit` 只有进程内接口。
+> 9. `rule_deprecated` 错误码不可达（冻结接口面无 deprecate 端点）。
+
 
 ---
 
 > **开工前置（refactor-plan-review M5/M8，2026-10-20 登记；2026-10-22 更新执行状态）**：本表任何单开工前，必须先过 core `tellurion:docs/TASKS.md`「五、X 线」的**公共前置**两条：
-> ① **M5 已结案（2026-10-21）** → `tellurion:docs/design/qt-decoupling/repo-inventory.md` §1.2：**六仓 ≠ 六进程**，本仓今天只到「仓内实现 + core 侧 port」，不升格容器；U7（compliance / alert 归属）仍待裁。
+> ① **M5 已结案（2026-10-21）** → `tellurion:docs/design/qt-decoupling/repo-inventory.md` §1.2：**六仓 ≠ 六进程**，本仓今天只到「仓内实现 + core 侧 port」，不升格容器；U7（compliance / alert 归属）**已裁（2026-10-24，见文首：检测器留 core，通道编排与报送归本仓）**。
 > ② **M8 接口对表已落（2026-10-22）** → 本仓 [`ARCHITECTURE.md`](ARCHITECTURE.md) §9（模板 = `tellurion:docs/design/qt-decoupling/data-service-contract-and-ownership.md` §4.1；**本行原指的 `target-module-topology.md` UnifiedDataPoint 节是幻影引用，已订正**）。
 > 正文以 core 彼处为准，此处只留指针、不镜像。
 
@@ -217,7 +257,7 @@ verified-by: QT-42 X3d 熔断指令实装（施工记录已落）
 |---|---|---|---|
 | X3a | 规则定义 + revision + 审批状态机（draft→approved→active→deprecated） | `QT-42` | 🔶 已实装（`internal/rule` + `internal/httpapi` 4 端点；PG Store / 迁移执行 / 事务边界已落）；鉴权未落 |
 | X3b | 快照内容寻址 + `resolve` / `bundle` | `QT-42` | 🔶 已实装（2026-10-23：`rule_snapshots` DDL + 三端点 + `ParseBundle` 边界；Memory/PG 双实现）；core 侧消费接线（F3）未落 |
-| X3c | 事件回传（异步批量）+ 监控聚合（敞口 / 告警） | `QT-42` | 🔶 事件回传已实装（2026-10-24：`risk.risk_events` + `POST /events`，200/207 + 去重键）；监控聚合 ⛔ U7 未裁 |
+| X3c | 事件回传（异步批量）+ 监控聚合（敞口 / 告警） | `QT-42` | ✅ 事件回传（2026-10-24：`risk.risk_events` + `POST /events`，200/207 + 去重键）+ 监控 3 端点（2026-10-24：只读 `risk_events` 聚合/报表，ADR-0004；鉴权闸 fail-closed） |
 | X3d | 熔断指令（幂等键） | `QT-42` | 🔶 已实装（2026-10-24：`risk.circuit_orders` + `POST /breakers`，幂等键 + 409）；执行方 / ACK 未落 |
 
 ## 二、跨仓指针（不在本仓，勿双写）

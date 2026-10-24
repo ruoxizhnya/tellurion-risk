@@ -127,14 +127,17 @@ func dedupeKey(e Event) string {
 // Options 构造 Service。
 type Options struct {
 	Store Store
+	// Reader 是监控聚合的读取端口；零值时若 Store 同时实现 Reader 则自动复用。
+	Reader Reader
 	// Now 可注入（测试固定时间）；零值取 time.Now。
 	Now func() time.Time
 }
 
 // Service 是事件回传的领域门面。
 type Service struct {
-	store Store
-	now   func() time.Time
+	store  Store
+	reader Reader
+	now    func() time.Time
 }
 
 // New 构造 Service。
@@ -142,10 +145,15 @@ func New(opts Options) (*Service, error) {
 	if opts.Store == nil {
 		return nil, errors.New("event: store is required")
 	}
+	if opts.Reader == nil {
+		if r, ok := opts.Store.(Reader); ok {
+			opts.Reader = r
+		}
+	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	return &Service{store: opts.Store, now: opts.Now}, nil
+	return &Service{store: opts.Store, reader: opts.Reader, now: opts.Now}, nil
 }
 
 // Ingest 校验一批原始事件并落库。整批不可解析（空数组）→ ErrInvalidParams；

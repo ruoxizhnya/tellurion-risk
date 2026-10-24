@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: QT-42 X3d 熔断指令表落库——DDL 与 internal/rule/ddl.go 逐表对表
+verified-by: QT-42 监控 3 端点——risk_events 时间索引与告警投影口径对表
 ---
 
 # DB Schema — tellurion-risk
@@ -18,7 +18,7 @@ verified-by: QT-42 X3d 熔断指令表落库——DDL 与 internal/rule/ddl.go �
 | `risk.rule_revisions` | 版本追加 + 审批状态（draft→approved→active→deprecated）+ `version_hash` | ✅ 同上 |
 | `risk.rule_snapshots` | run 前下发的规则快照（内容寻址；回测结果记 `risk_rules_hash`） | ✅ DDL + Memory/PG 读写（`internal/rule/snapshot.go` / `store.go` / `internal/pgstore`） |
 | `risk.limits` | 账户 / 策略 / 标的级限额 | 🔶 DDL 已落（2026-10-24，仅建表；读写路径与端点未冻结） |
-| `risk.risk_events` | 裁决事件留痕（run 后异步批量回传；去重键 `run_id + order_id + event_seq`，`raw` 保留原文） | ✅ DDL + Memory/PG（2026-10-24，X3c） |
+| `risk.risk_events` | 裁决事件留痕（run 后异步批量回传；去重键 `run_id + order_id + event_seq`，`raw` 保留原文）；监控的**唯一读源**（敞口 / 告警 / evaluate） | ✅ DDL + Memory/PG（2026-10-24，X3c；监控读取 2026-10-24） |
 | `risk.circuit_orders` | 熔断指令下发记录（幂等键 `breaker_id`；载荷身份 action + scope + reason） | ✅ DDL + Memory/PG（2026-10-24，X3d） |
 | `risk.audit_logs` | **规则与审批的操作审计**（谁改了哪条规则、谁批的） | 🔶 DDL 已落（**新表**，与现 `audit_logs` 无关、不复用——后者是 ADR-017 鉴权访问审计（`tellurion:pkg/auth` 写入），留 core） |
 
@@ -42,6 +42,9 @@ verified-by: QT-42 X3d 熔断指令表落库——DDL 与 internal/rule/ddl.go �
   `CHECK (event_seq >= 0)`；`raw JSONB NOT NULL` 保存事件原文（未知字段不丢），
   `payload JSONB` 是调用方显式给的审计载荷；`received_at` 由服务端盖，`event_ts` 是调用方时间。
   写入按批事务：任何一条失败整批回滚；主键冲突 = duplicate（`ON CONFLICT DO NOTHING` 计数，不算失败）。
+  **监控读取（2026-10-24）**：按 `event_ts` 时间窗读取，新增索引
+  `risk_events_ts_idx ON risk.risk_events (event_ts DESC)`；告警投影只认 `verdict='alert'` 且 `payload`
+  合法（`rule` / `severity` / `message`），非法投影计入 `invalid_events` 而不是静默丢弃。
 - `circuit_orders`（2026-10-24，X3d）：`PRIMARY KEY (breaker_id)` —— 幂等键即主键；
   `CHECK (action IN ('halt','cancel_all'))` 与 Go 侧冻结枚举同源；`scope` 复用规则的冻结枚举；
   `status` 今天只写 `'applied'`（执行方 ACK 状态待升格 ADR）；`received_at` 与 `command_ts` 分开存。
@@ -110,7 +113,10 @@ verified-by: QT-42 X3d 熔断指令表落库——DDL 与 internal/rule/ddl.go �
   Service 不再持有进程内互斥锁。裁决见 `docs/adr/0003-pg-store-与事务边界.md`。
 - **事件写入路径定为服务侧批量回传（2026-10-24，X3c）**：内核 / 实盘在 run 后调 `POST /events`，
   去重键 `(run_id, order_id, event_seq)`；未知字段保留在 `raw`，不丢原文。
-  R2 的「服务侧异步收集 vs 内核回调」按此落地为**批量回传 + 服务端原子落库**；监控读取侧仍随 U7。
+  R2 的「服务侧异步收集 vs 内核回调」按此落地为**批量回传 + 服务端原子落库**。
+- **监控读取口径定为 `risk_events` 单源（2026-10-24，ADR-0004）**：`monitor/exposure` / `alerts` / `evaluate`
+  只读 `risk.risk_events`；告警 = `verdict='alert'` 的事件投影；检测器不搬出 core，`evaluate` 只做报表。
+  敞口缺 `notional` / `qty+price` 时计入 `unpriced_events`，**不补零**；超过 5000 条事件拒绝而不是截断。
 - **熔断载荷身份不含 `ts`（2026-10-24，X3d）**：`breaker_id` 是幂等键，载荷身份 = `action + scope + reason`。
   `command_ts` 是投递时间，重试可重新生成；把它算进载荷身份会让正常重试变成 409。
   同键不同 `action/scope/reason` → 409（不许静默成功）。
@@ -119,5 +125,6 @@ verified-by: QT-42 X3d 熔断指令表落库——DDL 与 internal/rule/ddl.go �
 
 - **审计 actor 来源**：鉴权面（QT-50 ④）未落，当前审计 `actor` 为空串；角色矩阵与 actor 注入方式随 QT-50 定（R4）。
 - **`risk.limits` 的读写路径**：表已建，但限额的读取口径（快照附带 / 独立端点）与写入端点未冻结（R2 相关）。
-- **事件监控聚合（读取侧）**：`risk_events` 已可写；`monitor/*` 三端点的聚合口径随 U7 未裁。
+- **事件监控聚合（读取侧）**：~~随 U7 未裁~~ ✅ 2026-10-24（ADR-0004）——三端点只读 `risk_events`。
+  仍未落：core `alertLoop` 把告警投 `POST /events`（生产侧接线）、外部推送通道（webhook / 消息平台）。
 - **熔断执行方与 ACK**：`circuit_orders.status` 今天只写 `'applied'`；谁执行、如何回报 `acknowledged/failed` 随升格 ADR（R3 同源）。

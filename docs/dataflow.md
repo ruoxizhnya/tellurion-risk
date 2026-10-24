@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: QT-42 X3d 熔断指令实装——幂等键/载荷身份与 internal/breaker · risk.circuit_orders 对表
+verified-by: QT-42 监控 3 端点——risk_events 单源聚合、evaluate 只读报表与 fail-closed 鉴权闸
 ---
 
 # Dataflow — tellurion-risk
@@ -21,11 +21,15 @@ tellurion-risk  ── 写 risk.rule_defs / risk.rule_revisions / risk.audit_log
 core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 边界已备（rule.ParseBundle），
    │                                                        core 侧消费接线未做（run 的 risk_rules_hash 仍写空串，F3）
    └── 异步事件回传 ──►  POST /api/risk/events ──►  risk.risk_events   ✅ X3c（批量 + 去重键 + 207）
+                                                          │
+                                                          └──► monitor/{exposure,alerts,evaluate}
+                                                               只读聚合 / 报表   ✅（2026-10-24，ADR-0004）
 ```
 
-**现状（2026-10-24）**：左上半段（规则真相源 ①~③）、快照读侧（④ resolve / snapshots / bundle）与
-事件回传（run 后批量）已实现，持久化有 Memory 与 PG（事务边界见 ADR-0003）；
-core 侧消费接线、熔断、监控未落地，未落项逐条登记在 `docs/TASKS.md` QT-42 施工记录。
+**现状（2026-10-24）**：左上半段（规则真相源 ①~③）、快照读侧（④ resolve / snapshots / bundle）、
+事件回传（run 后批量）与监控三端点（只读聚合 / 报表）已实现，持久化有 Memory 与 PG（事务边界见 ADR-0003）；
+core 侧消费接线、熔断执行方、告警生产侧接线（core `alertLoop` → `POST /events`）未落地，
+未落项逐条登记在 `docs/TASKS.md` QT-42 施工记录。
 
 ## 2. 关键时序
 
@@ -63,14 +67,24 @@ core 侧消费接线、熔断、监控未落地，未落项逐条登记在 `docs
 10. 每笔 `CheckOrder(order)` → 进程内裁决 → 通过 / 拒绝 / 降规模
 11. 事件进本地队列
 
-### run 后（异步）—— ✅ X3c / X3d；监控聚合未落
+### run 后（异步）—— ✅ X3c / X3d / 监控（只读）
 
 12. 批量 `POST /api/risk/events` → 逐条校验（缺 `run_id` / `order_id` / `ts` 记 failed）→
     合法条目按 `(run_id, order_id, event_seq)` 幂等落 `risk_events`：已存在 = duplicate（200 计数），
     单条不合法 = 207 `partial_failure` + `failed[{index, code, message}]`；整批落库失败 = 500，重试整批
 13. `POST /api/risk/breakers` 可幂等下发熔断指令（`breaker_id` + 载荷身份 action/scope/reason）：
     首次 `applied`、同键同载荷 `already_applied`、同键不同载荷 409；落 `circuit_orders`。
-    监控层自动越限触发（`monitor/*` 三个端点）仍未落 — ⛔ U7
+
+### 监控读取（同步，只读；2026-10-24）
+
+14. `GET /api/risk/monitor/exposure`：按 `event_ts` 窗口读 `risk_events`，把 `payload`
+    投影成名义金额与方向，按 `symbol|account|strategy` 分桶；缺 `notional` / `qty+price` 计入
+    `unpriced_events`，方向推不出计入 `unsigned_events`；`verdict=alert` 的事件不参与。
+15. `GET /api/risk/monitor/alerts`：只读 `verdict='alert'` 的事件，按 `payload`
+    投影成告警（`rule` / `severity` / `message` 必填），按时间倒序返回；非法投影计入 `invalid_events`。
+16. `POST /api/risk/monitor/evaluate`：同一投影上按 `min_severity` / `rule` / 窗口过滤并汇总；
+    **不运行检测器、不写库、不推送外部通道**；响应 `detection:"outside_process"`。
+    三个端点都先过 `Authorizer` 闸：未装配 → 503，无凭证 → 401，越权 → 403。
 
 ## 3. 失败模式（每一处 fail-closed 都要能指名）
 
@@ -86,6 +100,11 @@ core 侧消费接线、熔断、监控未落地，未落项逐条登记在 `docs
 | 规则被改但 run 里没记 hash | 结果不可复现 | `risk_rules_hash` 必写进结果 | ⛔ core 侧接线（F3） |
 | 事件回传失败 | 留痕缺失 | 批量原子落库：整批失败 500 后重试整批（去重键幂等）；单条不合法 207 只重发 failed；允许延迟，不允许丢 | ✅（X3c：`internal/event` + `risk.risk_events` 主键去重） |
 | 熔断指令重复 | 重复平仓 | 幂等键 `breaker_id`：同键同载荷 → 200 `already_applied`；同键不同载荷 → 409（不执行） | ✅（X3d：`internal/breaker` + `circuit_orders` 主键） |
+| 监控端点鉴权闸未装配 | 跨账户敞口 / 告警被匿名读取 | `503 auth_unavailable`，**拒绝而非放行**；无凭证 401、越权 403 | ✅（`httpapi.requireAuth`；`TestMonitor_NoAuthorizerFailsClosed`） |
+| 监控读不到事件（读取端口未装配 / 库错误） | 把「读不到」显示成「没有敞口 / 没有告警」 | `503 dependency_unavailable` 或 500；绝不返回空报告冒充成功 | ✅（`event.ErrMonitorUnavailable`；`TestMonitor_RequiresReader`） |
+| 敞口字段缺口 / 窗口过大 | 低报风险 | 缺字段计入 `unpriced_events` / `unsigned_events`（不补零）；窗口 > 5000 条事件 → 400，不截断 | ✅（`TestExposure_AggregatesFromRiskEvents` / `TestExposure_RefusesTruncatedAggregate`） |
+| 告警事件投影非法 | 非法告警被静默吞掉 | 计入 `invalid_events`，不进入列表；严重度词表外同样计非法 | ✅（`TestAlerts_ProjectsAndSortsFromRiskEvents`） |
+| 汇总建立在截断数据上 | 少算告警 | `evaluate` 触到 limit → 400；`alerts` 分页截断显式 `truncated` | ✅（`TestEvaluate_ReportsWithoutWritingOrDetecting`） |
 
 ## 4. 不变量（可被测试钉住的）
 
@@ -100,6 +119,9 @@ core 侧消费接线、熔断、监控未落地，未落项逐条登记在 `docs
 9. 写路径的「读-改-写」全部在 `Store.Tx` 内；中途失败整笔回滚（Memory 与 PG 同语义）。✅ `TestMemoryTx_RollsBackAllWrites` / `TestServiceApprove_RollsBackAllWritesOnFailure`（ADR-0003）
 10. 事件按 `(run_id, order_id, event_seq)` 幂等：同键重放只计 duplicate、不重复落库；未知字段保留在原文。✅ `TestIngest_DedupesByRunOrderSeq` / `TestIngest_PartialFailureKeepsValidItems`
 11. 熔断指令按 `breaker_id` 幂等：同键同载荷重放 = `already_applied`（ts 不参与载荷身份）；同键不同载荷 = 409，不重复执行。✅ `TestApply_IdempotencyKey` / `TestAPI_BreakerIdempotency`
+12. 敞口 / 告警 / 评估**只来自 `risk.risk_events`**：响应 `source` 固定，测试用真实 `POST /events` 回传后读取。✅ `TestMonitor_ExposureFromEvents` / `TestMonitor_AlertsAndEvaluate`
+13. `evaluate` 不运行检测器、不写库：`detection:"outside_process"`，调用前后事件行数不变。✅ `TestEvaluate_ReportsWithoutWritingOrDetecting` / `TestMonitor_AlertsAndEvaluate`
+14. 监控端点未装配鉴权闸时拒绝服务（503），且不把读不到 / 解析失败当成空集。✅ `TestMonitor_NoAuthorizerFailsClosed` / `TestMonitor_AuthorizerOutcomes` / `TestMonitor_RequiresReader`
 
 ## 5. 与契约文档的关系
 

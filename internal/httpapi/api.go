@@ -15,16 +15,19 @@ import (
 // MaxBodyBytes 是单个请求体上限。管理面只有小 JSON。
 const MaxBodyBytes = 1 << 20
 
-// Server 是规则真相源的 HTTP 面（4 个规则管理端点 + 3 个快照端点 + 事件回传 + 熔断指令）。
-// monitor/* 三端点因 U7 未裁、形状不冻结，不在本切片（docs/ARCHITECTURE.md §9.4 / §9.6）。
+// Server 是规则真相源的 HTTP 面（4 个规则管理端点 + 3 个快照端点 + 事件回传 +
+// 熔断指令 + 3 个监控端点）。monitor/* 只读 risk.risk_events 做聚合与报表，
+// 检测器仍在 core 进程内（ADR-0004）。
 type Server struct {
-	svc      *rule.Service
-	events   *event.Service
-	breakers *breaker.Service
-	mux      *http.ServeMux
+	svc        *rule.Service
+	events     *event.Service
+	breakers   *breaker.Service
+	authorizer Authorizer
+	mux        *http.ServeMux
 }
 
-// Option 按需装配可选服务（事件 / 熔断）；不装配则不注册对应路由。
+// Option 按需装配可选服务（事件 / 熔断）与监控鉴权闸；事件 / 熔断不装配则不注册路由，
+// 鉴权闸不装配则 monitor/* 一律拒绝服务（fail-closed）。
 type Option func(*Server)
 
 // WithEvents 装配 X3c 事件回传端点。
@@ -54,6 +57,10 @@ func New(svc *rule.Service, opts ...Option) *Server {
 	s.mux.HandleFunc("GET /api/risk/snapshots/{hash}/bundle", s.getSnapshot)
 	if s.events != nil {
 		s.mux.HandleFunc("POST /api/risk/events", s.ingestEvents)
+		// 监控端点读的是跨账户 / 跨策略敞口与告警：必须过鉴权闸。
+		s.mux.Handle("GET /api/risk/monitor/exposure", s.requireAuth(http.HandlerFunc(s.monitorExposure)))
+		s.mux.Handle("GET /api/risk/monitor/alerts", s.requireAuth(http.HandlerFunc(s.monitorAlerts)))
+		s.mux.Handle("POST /api/risk/monitor/evaluate", s.requireAuth(http.HandlerFunc(s.monitorEvaluate)))
 	}
 	if s.breakers != nil {
 		s.mux.HandleFunc("POST /api/risk/breakers", s.applyBreaker)

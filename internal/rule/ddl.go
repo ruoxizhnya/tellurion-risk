@@ -88,6 +88,10 @@ var migrationStatements = []string{
 		PRIMARY KEY (run_id, order_id, event_seq)
 	)`,
 
+	// 监控聚合按 event_ts 取时间窗；没有索引时每次读都是全表扫描。
+	`CREATE INDEX IF NOT EXISTS risk_events_ts_idx
+		ON risk.risk_events (event_ts DESC)`,
+
 	// circuit_orders 是熔断指令下发记录。幂等键 breaker_id = 主键；
 	// 载荷身份（action + scope + reason）由应用层比对，command_ts 不参与（重试可换时间）。
 	// status 今天只写 'applied'；执行方 ACK 状态待升格 ADR 后再扩。
