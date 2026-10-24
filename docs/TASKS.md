@@ -228,7 +228,7 @@ verified-by: QT-42 监控 3 端点实装（施工记录已落）
 >
 > 未落项（本条**取代** X3d 记录的列表）：
 >
-> 1. **`Authorizer` 实现（QT-50 ④）**：monitor/* 在真机上恒 503（有意的 fail-closed，拒而不放行）。
+> 1. **`Authorizer` 实现（QT-50 ④ → 裁-15，2026-10-25 已定，可开工）**：monitor/* 在真机上恒 503（有意的 fail-closed）。口径：用 kit `v0.1.1` 的 net/http 适配（`Parse` + `kind==access` + 角色 any-of + 启动闸），本仓只留 policy 表；读端点 viewer、写端点 trader、规则发布/审批 admin；无 secret + 回环 = 开放，无 secret + 非回环 = **拒绝启动**；审计 `actor` 从 claims 填（不再恒空串）。守卫：route table ≡ policy table + 三态（503/401/403）。
 > 2. **告警生产侧接线（跨仓）**：core `alertLoop` 尚未把告警投到 `POST /events`；接线前
 >    `alerts` / `evaluate` 只会看到空集。
 > 3. **外部推送通道**（webhook / 消息平台）与节流：本切片只做 HTTP 报表，不主动推送。
