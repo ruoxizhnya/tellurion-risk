@@ -132,6 +132,7 @@ verified-by: QT-42 监控 3 端点实装（施工记录已落）
 > 9. `rule_deprecated` 错误码不可达（冻结接口面无 deprecate 端点）。
 > 10. **core 侧消费接线（跨仓）**：`risk_rules_hash` 生产者仍写空串（F3）；需 core 在 run 前
 >    `resolve` → `ParseBundle` → 写 `run_provenance`。不在本仓施工，已报协调者。
+>    **2026-10-25 裁决已落（core `裁-10` / `裁-11`）**：core 每次 run 提交时调 `POST /api/risk/resolve`（run_spec 钉 hash 走锁定、否则 `latest`）；只有「本部署未接入 risk」允许空串并记 `not_configured`，配置了但取不到（含 `no_approved_rules` / `snapshot_not_found` / 5xx / 超时）一律 run `failed` + `risk_rules_unavailable`。本仓端点无需改动，F3 可直接开工。
 
 > **施工记录（2026-10-24 · X3c 事件回传）**
 >
