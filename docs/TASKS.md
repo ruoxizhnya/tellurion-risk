@@ -8,6 +8,8 @@ verified-by: 派发块 G4 —— 服务间角色 `service` 落策略表（resolv
 
 > 本仓**唯一**任务台账。跨仓任务只在 §二 留指针，**不镜像正文**（双写必然漂移）。
 > 状态：`⬜ 待做` / `🔶 进行中` / `⛔ 阻塞（有未解除前置）` / `✅ 完成（附日期）`
+
+> **第三轮裁决指针（2026-10-25）**：② 快照类型迁 contracts = 本仓把 `Snapshot` / `SnapshotRule` / `Scope` / `RuleType` / hash 纯函数 / 4 哨兵**改为 `contracts/risk` 的别名/转发**（本仓首次引 contracts），`Bundle` / `ParseBundle` / `ForScope` 留本仓；**编码逐字节不许改**（改 Canonical = 历史 `risk_rules_hash` 全废）。⑬ kit `v0.1.4` 发布后本仓升 pin。正文见 `tellurion:docs/design/qt-decoupling/cross-repo-decision-record-2026-10-25.md` §五。
 > 每张单六字段（① 目标 ② 上下文 ③ 要求 ④ 约束与非目标 ⑤ 验收 ⑥ 边界），判据见 `tellurion:AGENTS.md` §8.5。
 > 完成即标 ✅（附日期）并移入 `docs/archive/TASKS-YYYY-MM-DD-archived.md`；本文件只留未完成项。
 >
