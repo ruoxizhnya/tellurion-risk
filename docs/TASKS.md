@@ -287,8 +287,12 @@ verified-by: W2 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计
 >    `order_id=Alert.ID` / `event_seq=0`，`payload` = `Alert` 原样 JSON（`rule`/`severity`/`message`
 >    正是本仓投影要的三个字段）。`alerts` / `evaluate` 因此不再是结构性空集。**两条限制如实登记**：
 >    ① 装配开关 `risk_service.events_enabled` **默认关**，关着的部署里空集是设定；
->    ② 生产侧投递是异步 best-effort —— 队列满即丢弃并 Warn、5xx / 207 **不自动重发**、**无持久化 outbox**，
->    与本仓「事件回传允许延迟、不允许丢」的口径仍有差距（欠账：重发 / outbox 要另立单，落库需 core 侧新表）。
+>    ② 生产侧投递**已改为持久 outbox（2026-10-25 二批，core `tellurion:a53fe95`）**：告警先落
+>    core 的 `quant.alert_outbox`（该仓 Migration 060），后台每 `events_relay_interval` 取 pending
+>    重投，触 `events_max_attempts` 转 `failed` 终态但**保留行** —— 队列满即丢 / 重启即丢 /
+>    不可达窗口即丢这三条都没了，「允许延迟、不允许丢」这句账从此两侧都兑得住。
+>    仍存的限制：`alert_id` 撞键（同秒重启可造出同 id 两条告警）的那条不落新行，core 侧
+>    转 Warn 点名但不保证送达；真进程端到端腿仍未跑（下面 ④-3）。
 > 3. **外部推送通道**（webhook / 消息平台）与节流：本切片只做 HTTP 报表，不主动推送。
 > 4. **敞口口径的生产侧约定**：`account` / `strategy` / `side` / `qty` / `price` / `notional` 需由生产者
 >    写入 `payload`；漏写按 `unpriced_events` / `unsigned_events` 显性计数，不补零。
@@ -325,7 +329,10 @@ verified-by: W2 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计
 >
 > ④ **本仓新增未落项（本批只登记，不做）**：
 > 1. `POST /events` 不落审计行 / `risk_events` 无 actor 列（见 ③）。
-> 2. 生产侧投递**不满足「不允许丢」**：队列满即丢弃、5xx / 207 不重发、无 outbox（见上文监控施工记录第 2 条）。
+> 2. ~~生产侧投递不满足「不允许丢」：队列满即丢弃、5xx / 207 不重发、无 outbox~~
+>    **已闭合（2026-10-25 二批，core `tellurion:a53fe95`）**：core 侧新增 `quant.alert_outbox`
+>    + 后台 relay 重投（见上文限制 ② 的订正）。本仓不再有这条欠账；剩下的只有
+>    撞键那一条没有新行（core 侧 Warn 点名）与下面第 3 条的端到端腿。
 > 3. 真实投递腿只在 core 侧用 `httptest` 自证；「core 真进程 → risk 真进程 → `monitor/alerts` 读出非空」
 >    这条端到端**仍未跑过**（需 risk 服务起来 + `events_enabled=true` + 一个 trader/admin token）。
 
@@ -346,7 +353,7 @@ verified-by: W2 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计
 |---|---|---|---|
 | X3a | 规则定义 + revision + 审批状态机（draft→approved→active→deprecated） | `QT-42` | 🔶 已实装（`internal/rule` + `internal/httpapi` 4 端点；PG Store / 迁移执行 / 事务边界已落）；鉴权已落（2026-10-25，ADR-0005） |
 | X3b | 快照内容寻址 + `resolve` / `bundle` | `QT-42` | 🔶 已实装（2026-10-23：`rule_snapshots` DDL + 三端点 + `ParseBundle` 边界；Memory/PG 双实现）；F3 订正（2026-10-25）：✅ `risk_rules_hash` 生产者已落真值（core QT-66），⬜ `bundle` → `ParseBundle` → `RiskPolicy` 半边未接 |
-| X3c | 事件回传（异步批量）+ 监控聚合（敞口 / 告警） | `QT-42` | ✅ 事件回传（2026-10-24：`risk.risk_events` + `POST /events`，200/207 + 去重键）+ 监控 3 端点（2026-10-24：只读 `risk_events` 聚合/报表，ADR-0004；鉴权闸 fail-closed）+ **生产侧已接线（2026-10-25，core 腿）**：core 告警按 `verdict:"alert"` 回传 ⇒ `alerts` / `evaluate` 不再是结构性空集（开关默认关；生产侧不重发 / 无 outbox 仍待） |
+| X3c | 事件回传（异步批量）+ 监控聚合（敞口 / 告警） | `QT-42` | ✅ 事件回传（2026-10-24：`risk.risk_events` + `POST /events`，200/207 + 去重键）+ 监控 3 端点（2026-10-24：只读 `risk_events` 聚合/报表，ADR-0004；鉴权闸 fail-closed）+ **生产侧已接线（2026-10-25，core 腿）**：core 告警按 `verdict:"alert"` 回传 ⇒ `alerts` / `evaluate` 不再是结构性空集（开关默认关；生产侧已改持久 outbox，2026-10-25 二批 core `tellurion:a53fe95`） |
 | X3d | 熔断指令（幂等键） | `QT-42` | 🔶 已实装（2026-10-24：`risk.circuit_orders` + `POST /breakers`，幂等键 + 409）；执行方 / ACK 未落 |
 
 ## 二、跨仓指针（不在本仓，勿双写）
