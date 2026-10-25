@@ -93,8 +93,10 @@ verified-by: W2 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计
 >
 > 未落项（在原 10 条之上更新；原 3 条改写，其余不变）：
 >
-> 3'. **core 侧消费接线（原「X3b 快照」剩余半边）**：`risk_rules_hash` 生产者仍写空串（F3，QT-63 落的表）——
->   core 要在 run 前调 `resolve`、拿 bundle 进 `ParseBundle` 构建 `RiskPolicy`、把 hash 写进 `run_provenance`。
+> 3'. **core 侧消费接线（原「X3b 快照」剩余半边）**：~~`risk_rules_hash` 生产者仍写空串（F3，QT-63 落的表）~~
+>   → **2026-10-25 拆两半读**：✅ hash 半边已落（core QT-66：run 提交时调 `POST /api/risk/resolve`，
+>   hash 写进 `quant.run_provenance`，空串只剩 `not_configured`）；⬜ 「拿 bundle 进 `ParseBundle`
+>   构建 `RiskPolicy`」仍未接（core 全仓 `ParseBundle` 零调用点，限额来自它自己的 `risk_manager.*` 配置）。
 >   这是跨仓单（core 侧改动），不在本仓。`ParseBundle` 的 Go 类型出现第二个使用方（core）后，
 >   `Snapshot` / `SnapshotRule` 按 ADR-0001 ① 迁 contracts。
 
@@ -131,9 +133,10 @@ verified-by: W2 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计
 > 8. 审计读取无 HTTP 端点：`Store.ListAudit` 只有进程内接口。
 > 9. `rule_deprecated` 错误码不可达（冻结接口面无 deprecate 端点）。
 
-> 10. **core 侧消费接线（跨仓）**：`risk_rules_hash` 生产者仍写空串（F3）；需 core 在 run 前
+> 10. **core 侧消费接线（跨仓）**：~~`risk_rules_hash` 生产者仍写空串（F3）~~（2026-10-25 已落真值，见本条末）；需 core 在 run 前
 >    `resolve` → `ParseBundle` → 写 `run_provenance`。不在本仓施工，已报协调者。
 >    **2026-10-25 裁决已落（core `裁-10` / `裁-11`）**：core 每次 run 提交时调 `POST /api/risk/resolve`（run_spec 钉 hash 走锁定、否则 `latest`）；只有「本部署未接入 risk」允许空串并记 `not_configured`，配置了但取不到（含 `no_approved_rules` / `snapshot_not_found` / 5xx / 超时）一律 run `failed` + `risk_rules_unavailable`。本仓端点无需改动，F3 可直接开工。
+>    **✅ 开工并已落（2026-10-25，core QT-66 腿）**：`risk_rules_hash` 的生产者不再写空串 —— 账在 `tellurion:docs/TASKS.md` QT-66 与 `tellurion:cmd/analysis/wiring/risk_rules.go`；本仓端点确实零改动。**剩余半边**（bundle → `ParseBundle` → 构建 `RiskPolicy`）仍未接，本条不得整条划掉。
 
 > **施工记录（2026-10-25 · W2 鉴权接线：kit 适配 + 审计读 + 启动闸）**
 >
@@ -171,7 +174,7 @@ verified-by: W2 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计
 > 3. **敞口口径的生产侧约定**：`account` / `strategy` / `side` / `qty` / `price` / `notional` 需生产者写入
 >    `payload`；漏写按 `unpriced_events` / `unsigned_events` 显性计数。
 > 4. **熔断执行方与 ACK**：`circuit_orders.status` 今天只写 `applied`；随升格 ADR。
-> 5. **core 侧消费接线（跨仓）**：`risk_rules_hash` 生产者仍写空串（F3）。
+> 5. **core 侧消费接线（跨仓）**：F3 **订正**（2026-10-25）—— ✅ `risk_rules_hash` 生产者已落真值（core QT-66，账在 `tellurion:docs/TASKS.md`）；⬜ `bundle` → `ParseBundle` → 构建 `RiskPolicy` 半边仍待（core 零调用点）。
 > 6. `risk.limits` 的读写路径与端点：表已建，读取口径未冻结。
 > 7. `rule_deprecated` 错误码不可达（冻结接口面无 deprecate 端点）。
 > 8. **core 调本仓的 token 分发（跨仓）**：鉴权开启后 core 侧调用 `resolve` / `events` / `breakers`
@@ -210,7 +213,7 @@ verified-by: W2 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计
 > 4. `risk.limits` 的读写路径与端点：表已建，读取口径未冻结。
 > 5. 审计读取无 HTTP 端点：`Store.ListAudit` 只有进程内接口。
 > 6. `rule_deprecated` 错误码不可达（冻结接口面无 deprecate 端点）。
-> 7. **core 侧消费接线（跨仓）**：`risk_rules_hash` 生产者仍写空串（F3）；不在本仓施工，已报协调者。
+> 7. **core 侧消费接线（跨仓）**：F3 **订正**（2026-10-25）—— ✅ `risk_rules_hash` 生产者已落真值（core QT-66，账在 `tellurion:docs/TASKS.md`）；⬜ `bundle` → `ParseBundle` → 构建 `RiskPolicy` 半边仍待。不在本仓施工。
 
 > **施工记录（2026-10-24 · X3d 熔断指令）**
 >
@@ -245,7 +248,7 @@ verified-by: W2 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计
 > 4. `risk.limits` 的读写路径与端点：表已建，读取口径未冻结。
 > 5. 审计读取无 HTTP 端点：`Store.ListAudit` 只有进程内接口。
 > 6. `rule_deprecated` 错误码不可达（冻结接口面无 deprecate 端点）。
-> 7. **core 侧消费接线（跨仓）**：`risk_rules_hash` 生产者仍写空串（F3）；不在本仓施工，已报协调者。
+> 7. **core 侧消费接线（跨仓）**：F3 **订正**（2026-10-25）—— ✅ `risk_rules_hash` 生产者已落真值（core QT-66，账在 `tellurion:docs/TASKS.md`）；⬜ `bundle` → `ParseBundle` → 构建 `RiskPolicy` 半边仍待。不在本仓施工。
 
 > **施工记录（2026-10-24 · 监控 3 端点 / U7 拆分后）**
 >
@@ -274,17 +277,53 @@ verified-by: W2 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计
 > 未落项（本条**取代** X3d 记录的列表）：
 >
 > 1. **`Authorizer` 实现（QT-50 ④ → 裁-15，2026-10-25 已定，可开工）**：monitor/* 在真机上恒 503（有意的 fail-closed）。口径：用 kit `v0.1.1` 的 net/http 适配（`Parse` + `kind==access` + 角色 any-of + 启动闸），本仓只留 policy 表；读端点 viewer、写端点 trader、规则发布/审批 admin；无 secret + 回环 = 开放，无 secret + 非回环 = **拒绝启动**；审计 `actor` 从 claims 填（不再恒空串）。守卫：route table ≡ policy table + 三态（503/401/403）。
-> 2. **告警生产侧接线（跨仓）**：core `alertLoop` 尚未把告警投到 `POST /events`；接线前
->    `alerts` / `evaluate` 只会看到空集。
+> 2. **告警生产侧接线（跨仓）**：✅ 已落（2026-10-25）—— core 的 `core:pkg/alert`（6 个检测器 + 经
+>    `AlertManager.Fire` 进来的对账 / 双跑差异）按 `POST /api/risk/events` 回传 `verdict:"alert"`，
+>    落点 `core:cmd/analysis/wiring/risk_events.go`；去重键映射 `run_id="core:alert-loop"` /
+>    `order_id=Alert.ID` / `event_seq=0`，`payload` = `Alert` 原样 JSON（`rule`/`severity`/`message`
+>    正是本仓投影要的三个字段）。`alerts` / `evaluate` 因此不再是结构性空集。**两条限制如实登记**：
+>    ① 装配开关 `risk_service.events_enabled` **默认关**，关着的部署里空集是设定；
+>    ② 生产侧投递是异步 best-effort —— 队列满即丢弃并 Warn、5xx / 207 **不自动重发**、**无持久化 outbox**，
+>    与本仓「事件回传允许延迟、不允许丢」的口径仍有差距（欠账：重发 / outbox 要另立单，落库需 core 侧新表）。
 > 3. **外部推送通道**（webhook / 消息平台）与节流：本切片只做 HTTP 报表，不主动推送。
 > 4. **敞口口径的生产侧约定**：`account` / `strategy` / `side` / `qty` / `price` / `notional` 需由生产者
 >    写入 `payload`；漏写按 `unpriced_events` / `unsigned_events` 显性计数，不补零。
 > 5. **熔断执行方与 ACK**：`circuit_orders.status` 今天只写 `applied`；随升格 ADR。
-> 6. **core 侧消费接线（跨仓）**：`risk_rules_hash` 生产者仍写空串（F3）。
+> 6. **core 侧消费接线（跨仓）**：F3 **订正**（2026-10-25）—— ✅ `risk_rules_hash` 生产者已落真值（core QT-66，账在 `tellurion:docs/TASKS.md`）；⬜ `bundle` → `ParseBundle` → 构建 `RiskPolicy` 半边仍待（core 零调用点）。
 > 7. `risk.limits` 的读写路径与端点：表已建，读取口径未冻结。
 > 8. 审计读取无 HTTP 端点：`Store.ListAudit` 只有进程内接口。
 > 9. `rule_deprecated` 错误码不可达（冻结接口面无 deprecate 端点）。
 
+> **施工记录（2026-10-25 · 跨仓：告警生产侧接线落地 + F3 账目订正）**
+>
+> 本仓**代码零改动**（票面「risk 的 `alerts` / `evaluate` 不再是空集」靠的是生产侧接线，端点与投影早就对了）。
+>
+> ① **生产侧接线（QT-42 X3c 的 core 腿）✅**：core 新增 `core:cmd/analysis/wiring/risk_events.go`
+> （`RiskEventSink` 实现 `alert.Channel`）把告警攒批 `POST /api/risk/events`。映射与本仓契约的对照：
+> 外层信封只有 `events`（本仓 `DisallowUnknownFields`）、`verdict="alert"`（`event.VerdictAlert` 同值）、
+> `payload` = `Alert` 原样 JSON 且 `severity` 词表 `info/warning/critical` 与 `monitor.severityRank` 同源、
+> `ts` 取告警时间（非零，过 `Event.Validate`）。去重键 `(run_id, order_id, event_seq)` 本是订单坐标，
+> 告警两者都不属于 ⇒ 取 `"core:alert-loop"` / `Alert.ID` / `0`；`monitor/alerts?run_id=` 因此只有生产者含义。
+> 验收：17 条 `httptest` 单测（含 wire 逐键断言、207 点名、`duplicates` 转 Warn、背压不阻塞、装配开关）；
+> 破坏验证 = `verdict` 改成 `"risk_alert"` + `Authorization` 头改名 ⇒ 三条红，逐字节还原（sha256 `95f55721…` 相同）⇒ 绿。
+>
+> ② **F3 拆两半（票面「QT-66 已落 ⇒ `risk_rules_hash` 生产者已非空串」核对结论）**：hash 半边**已落**
+> （`git merge-base --is-ancestor 0e267c6 main` 实测为真；`core:cmd/analysis/wiring/risk_rules.go` 每次 run
+> 调 `POST /api/risk/resolve` 取 64 位小写 hex 写进 `quant.run_provenance`）。但**同一条 F3 里的
+> 「拿 bundle 进 `ParseBundle` 构建 `RiskPolicy`」半边没落** —— core 全仓 grep `ParseBundle` 零调用点，
+> 进程内限额仍来自 `config/analysis-service.yaml` 的 `risk_manager.*`。所以 F3 不能整条关闭，
+> 本次把本仓六处「生产者仍写空串」的旧账逐条改成「✅ hash 半边 / ⬜ bundle 半边」。
+>
+> ③ **票面「actor 取自 claims」的核对结论（前提需订正）**：这条**不是**事件回传侧的待办。
+> `actorOf`（`internal/httpapi/auth.go`）今天只作用于规则 create/update/approve 三处，写的是
+> `risk.audit_logs.actor`；`risk.risk_events` **没有 actor 列**，`POST /events` 也不写审计行。
+> 要让事件带调用方身份 = 加列 + 加审计写（DDL 变更，另立单），不在本票范围。已登记为新未落项：
+>
+> ④ **本仓新增未落项（本批只登记，不做）**：
+> 1. `POST /events` 不落审计行 / `risk_events` 无 actor 列（见 ③）。
+> 2. 生产侧投递**不满足「不允许丢」**：队列满即丢弃、5xx / 207 不重发、无 outbox（见上文监控施工记录第 2 条）。
+> 3. 真实投递腿只在 core 侧用 `httptest` 自证；「core 真进程 → risk 真进程 → `monitor/alerts` 读出非空」
+>    这条端到端**仍未跑过**（需 risk 服务起来 + `events_enabled=true` + 一个 trader/admin token）。
 
 ---
 
@@ -302,8 +341,8 @@ verified-by: W2 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计
 | 阶段 | 内容 | 上游单号 | 前置 |
 |---|---|---|---|
 | X3a | 规则定义 + revision + 审批状态机（draft→approved→active→deprecated） | `QT-42` | 🔶 已实装（`internal/rule` + `internal/httpapi` 4 端点；PG Store / 迁移执行 / 事务边界已落）；鉴权已落（2026-10-25，ADR-0005） |
-| X3b | 快照内容寻址 + `resolve` / `bundle` | `QT-42` | 🔶 已实装（2026-10-23：`rule_snapshots` DDL + 三端点 + `ParseBundle` 边界；Memory/PG 双实现）；core 侧消费接线（F3）未落 |
-| X3c | 事件回传（异步批量）+ 监控聚合（敞口 / 告警） | `QT-42` | ✅ 事件回传（2026-10-24：`risk.risk_events` + `POST /events`，200/207 + 去重键）+ 监控 3 端点（2026-10-24：只读 `risk_events` 聚合/报表，ADR-0004；鉴权闸 fail-closed） |
+| X3b | 快照内容寻址 + `resolve` / `bundle` | `QT-42` | 🔶 已实装（2026-10-23：`rule_snapshots` DDL + 三端点 + `ParseBundle` 边界；Memory/PG 双实现）；F3 订正（2026-10-25）：✅ `risk_rules_hash` 生产者已落真值（core QT-66），⬜ `bundle` → `ParseBundle` → `RiskPolicy` 半边未接 |
+| X3c | 事件回传（异步批量）+ 监控聚合（敞口 / 告警） | `QT-42` | ✅ 事件回传（2026-10-24：`risk.risk_events` + `POST /events`，200/207 + 去重键）+ 监控 3 端点（2026-10-24：只读 `risk_events` 聚合/报表，ADR-0004；鉴权闸 fail-closed）+ **生产侧已接线（2026-10-25，core 腿）**：core 告警按 `verdict:"alert"` 回传 ⇒ `alerts` / `evaluate` 不再是结构性空集（开关默认关；生产侧不重发 / 无 outbox 仍待） |
 | X3d | 熔断指令（幂等键） | `QT-42` | 🔶 已实装（2026-10-24：`risk.circuit_orders` + `POST /breakers`，幂等键 + 409）；执行方 / ACK 未落 |
 
 ## 二、跨仓指针（不在本仓，勿双写）

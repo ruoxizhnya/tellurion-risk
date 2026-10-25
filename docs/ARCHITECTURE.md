@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-25
-verified-by: 裁-15 鉴权接线（kit net/http 适配 · 全端点策略表 · 审计读 · ADR-0005）
+verified-by: 裁-15 鉴权接线（kit net/http 适配 · 全端点策略表 · 审计读 · ADR-0005）；同日 QT-42 X3c 的 core 腿（告警生产侧接线）+ F3 账目订正
 ---
 
 # 架构 — tellurion-risk
@@ -57,7 +57,9 @@ doc.go               仓级包文档（无代码）
 **依赖方向单一**：`cmd/riskservice` → `internal/httpapi` / `internal/pgstore` → `internal/rule` / `internal/event` / `internal/breaker`；
 `internal/rule` 不 import 传输层，也不 import `database/sql`（事务边界由 Store 端口表达，见 ADR-0003）。
 `internal/httpapi/auth.go` → `tellurion-kit/auth/httpadapter`（机制），policy 表留在本包（策略，ADR-0005）。
-**未落**：外部推送通道、core `alertLoop` 把告警投 `POST /events`、core 侧 RiskPolicy 消费接线（F3）。
+**未落**（2026-10-25 订正）：外部推送通道；core 侧 `bundle` → `rule.ParseBundle` → 构建 `RiskPolicy`
+（F3 的剩余半边 —— **F3 的 hash 半边已落**：QT-66 把 `risk_rules_hash` 写进 `quant.run_provenance`；
+**告警生产侧接线也已落**：core `alertLoop` → `POST /events`，开关默认关）；`POST /events` 的审计留痕。
 清单见 `docs/TASKS.md` QT-42 施工记录。
 
 ## 4. 三份契约（功能的边界就在这三份文件里）
@@ -100,9 +102,9 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| X3a | 规则定义 + 版本 + 审批状态机 + 审计 | 🔶 已实装（`internal/rule` + `internal/httpapi` 4 端点；PG Store / 迁移执行 / 事务边界已落（2026-10-24，ADR-0003）；鉴权未落） |
-| X3b | 快照 + `resolve` / `bundle` | 🔶 已实装（`risk.rule_snapshots` DDL + 快照内容寻址 + `resolve`/`snapshots/{hash}`/`bundle` 三端点 + `rule.ParseBundle` 进程内边界，Memory/PG 双实现）；core 侧消费接线（F3）未落 |
-| X3c | 事件回传 + 监控聚合 | ✅ 已实装（2026-10-24：`internal/event` + `POST /events` 批量/去重键/207；监控 3 端点只读 `risk_events` 聚合/报表，ADR-0004；鉴权闸 fail-closed） |
+| X3a | 规则定义 + 版本 + 审批状态机 + 审计 | 🔶 已实装（`internal/rule` + `internal/httpapi` 4 端点；PG Store / 迁移执行 / 事务边界已落（2026-10-24，ADR-0003）；鉴权已落（2026-10-25 裁-15 + ADR-0005：全端点过闸，`actor` 从 claims） |
+| X3b | 快照 + `resolve` / `bundle` | 🔶 已实装（`risk.rule_snapshots` DDL + 快照内容寻址 + `resolve`/`snapshots/{hash}`/`bundle` 三端点 + `rule.ParseBundle` 进程内边界，Memory/PG 双实现）；F3 订正（2026-10-25）：✅ `risk_rules_hash` 生产者已落（QT-66 的 core 腿），⬜ `bundle` → `ParseBundle` → `RiskPolicy` 仍未接（core 零调用点） |
+| X3c | 事件回传 + 监控聚合 | ✅ 已实装（2026-10-24：`internal/event` + `POST /events` 批量/去重键/207；监控 3 端点只读 `risk_events` 聚合/报表，ADR-0004；鉴权闸 fail-closed）。**生产侧已接（2026-10-25）**：core 的告警按 `verdict:"alert"` 回传 ⇒ `alerts` / `evaluate` 不再是结构性空集（开关 `risk_service.events_enabled` 默认关） |
 | X3d | 熔断指令（幂等） | 🔶 已实装（`internal/breaker` + `POST /breakers` + `risk.circuit_orders`：`breaker_id` 幂等键、200 applied/already_applied、409 载荷冲突）；执行方与 ACK ⛔ 升格 ADR |
 
 ## 9. 接口对表（M8 前置 · ✅ 2026-10-22）
@@ -143,7 +145,7 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 | `RuleSnapshot` | **本仓已实装 wire 形状**（X3b，`internal/rule/snapshot.go`）：`Snapshot{risk_rules_hash, rules[], created_at}`；`risk.rule_snapshots` DDL 已落 | 目标 `tellurion-contracts/risk`（届时应已有 core + 本仓两个使用方） | 解析失败 / hash 不匹配 ⇒ 拒绝开跑（不回落 latest）；`rule.ParseBundle` 双头 derive 校验 | 内容寻址：任一规则内容变 ⇒ 新 hash；**hash 算法变更 = 域标签 v2（全历史 hash 作废）**。样板 = `FactorDefinition.VersionHash()`（`pkg/domain/factor_def.go:151`：canonical JSON 的 SHA-256，加载时重新 derive 校验，见 `pkg/storage/factor_definition.go:94-97`） |
 | `RuleEvent`（目标） | **本仓已实装 wire 形状**（X3c，`internal/event`）：`{run_id, order_id, event_seq, symbol?, verdict?, reason?, payload?, ts}`；`risk.risk_events` DDL 已落；未知字段保留在落库原文 `raw` | 目标 `tellurion-contracts/risk`（同 `RuleSnapshot`） | 去重键 `run_id + order_id + event_seq`；批量部分失败必须**逐条**报（207 `failed[{index, code, message}]`），不许全量 500 / 全量重发 | 加字段 = MINOR；未知字段**不得丢弃**（原文进 `raw` JSONB） |
 | `BreakerCommand`（目标） | **本仓已实装 wire 形状**（X3d，`internal/breaker`）：`{breaker_id, action, scope, reason?, ts}`；动作冻结枚举 `halt` / `cancel_all`；`risk.circuit_orders` DDL 已落 | 同上 | 幂等键 `breaker_id`；同键同载荷 ⇒ `already_applied`；同键不同载荷 ⇒ **409 `idempotency_conflict`**（不许静默成功）。载荷身份 = action + scope + reason，`ts` 不参与 | 幂等键语义 frozen；新增动作枚举 = MINOR（旧执行方 fail-closed 拒收未知动作） |
-| `risk_rules_hash`（目标值） | 定义在 `pkg/backtest/contracts/provenance.go:174`，无条件进 canonical（`:216`）；QT-63 已落表与写入路径，但生产者今天写空串（F3） | 已属 contracts（QT-03 冻结域） | 空串 = 未登记；**不得用空串冒充「无风控」** | SHA-256 hex（64 字符）；域标签变更 = breaking |
+| `risk_rules_hash`（目标值） | 定义在 `pkg/backtest/contracts/provenance.go:174`，无条件进 canonical（`:216`）；QT-63 已落表与写入路径；~~生产者今天写空串（F3）~~ **已落真值**（2026-10-25，QT-66 的 core 腿：run 提交时向本仓 `POST /api/risk/resolve` 取一次） | 已属 contracts（QT-03 冻结域） | 空串 = 未登记；**不得用空串冒充「无风控」**（今天空串只对应 `not_configured` = 该部署未接入 risk 服务） | SHA-256 hex（64 字符）；域标签变更 = breaking |
 
 ### 9.4 C 组 · 服务对外 HTTP 面（升格后）
 
@@ -179,7 +181,7 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 | `risk.risk_events` | 🔶 已实装（X3c）：`internal/event` + Memory/PG 写入 + DDL 已落（启动时执行）；读侧已实装（2026-10-24）：`event.Reader` 供 monitor/* 聚合 | 唯一 owner = 本仓；去重键 `(run_id, order_id, event_seq)`；`raw` 保留事件原文；监控按 `event_ts` 窗口只读 | 事件回传允许延迟、**不允许丢**；整批原子写入；部分失败 → `207` + 逐条明细 |
 | `risk.circuit_orders` | 🔶 已实装（X3d）：`internal/breaker` + Memory/PG 写入 + DDL 已落 | `breaker_id` UNIQUE；记录下发与执行状态（今天只写 `applied`） | 同键同载荷 → `already_applied`；同键不同载荷 → `409` |
 | `risk.audit_logs` | 待建（**新表**） | 规则 / 审批 / 熔断的人操作留痕 | **不迁、不复用** core 的 `audit_logs`：后者是 ADR-017 鉴权访问审计（`pkg/storage/postgres.go:335` DDL、`pkg/auth/auth.go:492` `RecordAudit` 写入），语义不同（`docs/db-schema.md` §1 注） |
-| `quant.run_provenance.risk_rules_hash` | 表与写入路径已落（QT-63），生产者写空串（F3） | X3b 把空串换成真值；只存「输入身份」，不存 status | 同一 `run_id` 写不同 hash ⇒ fail-loud（QT-63 ④-⑦） |
+| `quant.run_provenance.risk_rules_hash` | 表与写入路径已落（QT-63）；~~生产者写空串（F3）~~ 已由 QT-66 换成真值（2026-10-25，core 腿） | X3b 把空串换成真值 ✅；只存「输入身份」，不存 status | 同一 `run_id` 写不同 hash ⇒ fail-loud（QT-63 ④-⑦） |
 
 ### 9.6 E 组 · 版本策略汇总（QT-19 口径）
 
@@ -196,6 +198,6 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 |---|---|---|---|
 | R1 | `/api/risk/*` 前缀所有权（F4） | core 已有四条进程内端点；本仓目标面同前缀 | 建议：本仓只拥有 `rules` / `snapshots` / `resolve` / `events` / `breakers` / `audit` / `monitor`；core 四条**永不迁入**；网关按最长前缀转发。拍板时机 = 升格 ADR |
 | R2 | 事件写入路径：服务侧异步收集 vs 内核回调 | `docs/db-schema.md` §5 未定稿 | 影响 C 组 `POST /events` 的重试与 `207` 语义；X3c 开工前拍 |
-| R3 | compliance / alert 归属（U7） | **已裁（2026-10-24）**：检测器留 core，通道编排与报送归本仓 | 形状已冻结为只读 `risk_events` 聚合/报表（ADR-0004）；生产侧接线（core `alertLoop` → `POST /events`）与外部推送通道仍待 |
+| R3 | compliance / alert 归属（U7） | **已裁（2026-10-24）**：检测器留 core，通道编排与报送归本仓 | 形状已冻结为只读 `risk_events` 聚合/报表（ADR-0004）；生产侧接线（core `alertLoop` → `POST /events`）**已落（2026-10-25）**，外部推送通道、生产侧重发 / outbox（现在满则丢弃、5xx 不重发）仍待 |
 | R4 | 鉴权角色矩阵 | **已裁（2026-10-25）**：读 viewer / 写 trader / 规则发布与审批 admin；机制在 kit `auth/httpadapter`，策略表在本仓 `internal/httpapi/policy.go`（ADR-0005） | 全端点 fail-closed；无 secret + 非回环拒绝启动 |
 | R5 | `CheckOrder` 的输入校验细表 | 零实现（F1） | 本表冻结错误语义与总判据；逐字段校验清单在实现单里用测试钉住，不在此处预写 |

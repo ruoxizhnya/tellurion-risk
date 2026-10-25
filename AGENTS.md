@@ -20,7 +20,15 @@
 （`event.Reader`，Memory/PG）；持久化有 `Memory` 与 PG（`internal/pgstore`，启动时执行
 `rule.Migrations()` 幂等 DDL）；Service 的读-改-写经 `Store.Tx`（PG 行锁）完成，不再用进程内互斥锁；
 鉴权走 kit `auth/httpadapter` + 本仓 policy 表（全端点 fail-closed）；
-core 侧消费接线未做（run 的 `risk_rules_hash` 生产者仍写空串，F3）。
+core 侧消费接线**拆两半读**（2026-10-25 订正）：✅ `risk_rules_hash` 生产者已落（QT-66 —— run 提交时调
+`POST /api/risk/resolve`，hash 写进 `quant.run_provenance`，**不再恒空串**；空串只剩「本部署未接入」=
+`not_configured` 一种合法含义）；⬜ `bundle` → `rule.ParseBundle` → 构建 `RiskPolicy` **仍未接**
+（core 全仓 `ParseBundle` 零调用点，进程内限额今天来自它自己的 `risk_manager.*` 配置）。
+告警生产侧接线同日落地：core 的 6 个检测器 + `Fire` 进来的对账 / 双跑差异按 `POST /api/risk/events`
+回传（`verdict:"alert"`），所以 `monitor/alerts` / `evaluate` 不再是结构性空集 —— 但生产侧开关
+`risk_service.events_enabled` **默认关**，关着的部署里空集是设定。
+`POST /events` 今天**不写审计行**：`actorOf` 只作用于规则 create/update/approve 三处，`risk.risk_events`
+也没有 actor 列（票面上「actor 取自 claims」说的是 `risk.audit_logs`，不是事件回传）。
 
 **留在 core 的实现**：`core:pkg/risk`（`RiskManager` / `RegimeDetector` / `StopLossChecker` / `CheckOrder`）+ `core:pkg/compliance`（异常交易 / 减持 / 大额报送）+ `core:pkg/alert`（**6 个检测器 + 进程内 `alertLoop`**）。
 **U7 已裁（2026-10-24）**：告警的**通道编排与报送**归本仓（`monitor/exposure` / `alerts` / `evaluate` 三端点）；**检测器不搬出 core**——逐 bar / 逐笔裁决仍在本进程内，禁止远程调用。

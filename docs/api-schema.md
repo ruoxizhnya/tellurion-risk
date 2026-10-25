@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-25
-verified-by: 裁-15 鉴权接线——kit net/http 适配 + 全端点策略表 + 审计读端点 + actor 取自 claims
+verified-by: 裁-15 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计读 + actor 取自 claims）；QT-42 X3c 的 core 腿（告警生产侧接线已落，`alerts` / `evaluate` 不再是结构性空集）
 ---
 
 # API Schema — tellurion-risk
@@ -22,8 +22,16 @@ verified-by: 裁-15 鉴权接线——kit net/http 适配 + 全端点策略表 +
 > 审计 `actor` 从 claims 填（open-access 记 `open-access`），不再有空串。
 > **监控三端点的检测器不搬出 core**：它们只读 `risk.risk_events` 做聚合与报表，`evaluate` **不运行检测器**
 > （ADR-0004）。
-> **未落地**：外部推送通道、core `alertLoop` 把告警投 `POST /events`、core 侧消费接线（run 的
-> `risk_rules_hash` 生产者仍写空串，F3）。未落项逐条登记在 `docs/TASKS.md` QT-42 施工记录。
+> **未落地**：外部推送通道；`POST /events` **不写审计行**（`actorOf` 今天只作用于规则 create/update/approve
+> 三处，`risk.risk_events` 也没有 actor / account 列 —— 事件回传的调用方身份不落库，见 `docs/TASKS.md` 未落项）。
+> **已落（2026-10-25 订正，原先这两条记在「未落地」里）**：
+> ① **告警生产侧接线**：core 的 `core:pkg/alert`（6 个检测器 + 经 `AlertManager.Fire` 进来的对账 / 双跑差异）
+> 已按 `POST /api/risk/events` 回传 `verdict:"alert"` 的事件，落点在 `core:cmd/analysis/wiring/risk_events.go`
+> （装配开关 `risk_service.events_enabled`，**默认关**）。`monitor/alerts` / `evaluate` 因此不再是结构性空集：
+> 开关打开的部署里有数据，关着的部署里空集是**设定**而非缺陷。
+> ② **core 侧消费接线（F3）**：QT-66 已落 —— core 每次 run 提交时调 `POST /api/risk/resolve`，把
+> `risk_rules_hash` 写进 `quant.run_provenance`；该列不再恒空串（空串只剩「本部署未接入」一种合法含义，
+> 记 `not_configured`）。未落项逐条登记在 `docs/TASKS.md` QT-42 施工记录。
 >
 > 本文件是**目标契约 + 现状**：已实现的行以代码为准，未实现的行是欠账，不允许把欠账当现状描述。
 
@@ -197,7 +205,11 @@ verified-by: 裁-15 鉴权接线——kit net/http 适配 + 全端点策略表 +
 | `value` / `threshold` / `attributes` | alerts / evaluate | 可选证据（attributes 原样透传） |
 
 > 冻结口径：这些字段是**新增**（MINOR）；改名 / 改语义 = breaking。未知字段不影响解析（payload 仍是自由审计载荷）。
-> **生产侧接线未落**：core 的 `alertLoop` 今天还没有把告警投到 `POST /events`，接线前 `alerts` / `evaluate` 只会看到空集。
+> **生产侧已接线（2026-10-25，QT-42 X3c 的 core 腿）**：core 的告警按上表投 `POST /events`，去重键的映射是
+> `run_id = "core:alert-loop"`（生产者作用域，**不是**一次真实 run）、`order_id = Alert.ID`、`event_seq = 0`。
+> 三条后果如实登记：`?run_id=` 过滤对告警只有生产者含义；告警不带 `notional` / `qty`，在 `exposure` 里一律计入
+> `unpriced_events`（**不改变敞口口径**）；`payload.attributes` 里若有不可编码值（NaN / Inf）core 侧当场报错并
+> **不发该条**，所以缺告警可能是生产侧投递失败，不一定是「没触发」。
 
 ## 2. 错误码与 fail-closed 语义
 

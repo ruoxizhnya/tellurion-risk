@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-24
-verified-by: QT-42 监控 3 端点——risk_events 时间索引与告警投影口径对表
+last-verified: 2026-10-25
+verified-by: QT-42 X3c 的 core 腿——risk_events 有了生产者（告警流）；同批登记「事件回传不落审计行 / 无 actor 列」
 ---
 
 # DB Schema — tellurion-risk
@@ -127,5 +127,9 @@ verified-by: QT-42 监控 3 端点——risk_events 时间索引与告警投影�
   （缺失退 `subject`）；显式 open-access（无 secret + 回环）记常量 `open-access`，**不再写空串**。
 - **`risk.limits` 的读写路径**：表已建，但限额的读取口径（快照附带 / 独立端点）与写入端点未冻结（R2 相关）。
 - **事件监控聚合（读取侧）**：~~随 U7 未裁~~ ✅ 2026-10-24（ADR-0004）——三端点只读 `risk_events`。
-  仍未落：core `alertLoop` 把告警投 `POST /events`（生产侧接线）、外部推送通道（webhook / 消息平台）。
+  生产侧接线 ✅（2026-10-25）：core 的告警按 `POST /events` 回传（`verdict:"alert"`、
+  `run_id="core:alert-loop"`、`order_id=Alert.ID`、`event_seq=0`；落点
+  `core:cmd/analysis/wiring/risk_events.go`，开关 `risk_service.events_enabled` 默认关）。
+  仍未落：外部推送通道（webhook / 消息平台）；**事件回传不落审计行** —— 本表无 actor / account 列，
+  `actorOf` 只作用于规则三端点（票面「actor 取自 claims」指的是 `risk.audit_logs`）。
 - **熔断执行方与 ACK**：`circuit_orders.status` 今天只写 `'applied'`；谁执行、如何回报 `acknowledged/failed` 随升格 ADR（R3 同源）。

@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-24
-verified-by: QT-42 监控 3 端点——risk_events 单源聚合、evaluate 只读报表与 fail-closed 鉴权闸
+last-verified: 2026-10-25
+verified-by: QT-42 X3c 的 core 腿（告警生产侧接线落地）+ F3 账目订正（hash 半边已落 / bundle 半边仍待）
 ---
 
 # Dataflow — tellurion-risk
@@ -18,17 +18,29 @@ tellurion-risk  ── 写 risk.rule_defs / risk.rule_revisions / risk.audit_log
    │
    │  ④ resolve / bundle（run 前 1 次）            ✅ X3b（快照内容寻址 + ParseBundle）
    ▼
-core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 边界已备（rule.ParseBundle），
-   │                                                        core 侧消费接线未做（run 的 risk_rules_hash 仍写空串，F3）
+core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 半边已落（2026-10-25）：
+   │                                                        ✅ QT-66 —— run 提交时调 resolve 取 hash
+   │                                                           写进 `quant.run_provenance`（F3 的 hash 半边关闭）
+   │                                                        ⬜ bundle → `rule.ParseBundle` → 构建 RiskPolicy
+   │                                                           **仍未接**：core 用的是自己的 `risk_manager.*` 配置
    └── 异步事件回传 ──►  POST /api/risk/events ──►  risk.risk_events   ✅ X3c（批量 + 去重键 + 207）
                                                           │
                                                           └──► monitor/{exposure,alerts,evaluate}
                                                                只读聚合 / 报表   ✅（2026-10-24，ADR-0004）
 ```
 
-**现状（2026-10-24）**：左上半段（规则真相源 ①~③）、快照读侧（④ resolve / snapshots / bundle）、
-事件回传（run 后批量）与监控三端点（只读聚合 / 报表）已实现，持久化有 Memory 与 PG（事务边界见 ADR-0003）；
-core 侧消费接线、熔断执行方、告警生产侧接线（core `alertLoop` → `POST /events`）未落地，
+**现状（2026-10-25 订正）**：左上半段（规则真相源 ①~③）、快照读侧（④ resolve / snapshots / bundle）、
+事件回传（批量 + 去重键 + 207）与监控三端点（只读聚合 / 报表）已实现，持久化有 Memory 与 PG（事务边界见 ADR-0003）；
+**告警生产侧接线（core `alertLoop` → `POST /events`）已于本日落地**（`tellurion:docs/TASKS.md` QT-42 X3c core 腿）。
+**F3 要拆成两半读**：hash 半边已落（QT-66：run 提交时调 `POST /api/risk/resolve`，把 `risk_rules_hash` 写进
+`quant.run_provenance`，空串只剩 `not_configured` 一种合法含义）；**bundle 半边仍未接** —— core 全仓 `ParseBundle`
+零调用点，进程内 `RiskPolicy` 的限额今天来自 `config/analysis-service.yaml` 的 `risk_manager.*`，不是快照。
+`risk_events` 今天的**唯一生产者是告警流**：
+`verdict:"alert"`、`run_id="core:alert-loop"`、`order_id=Alert.ID`、`event_seq=0`，落点
+`core:cmd/analysis/wiring/risk_events.go`，开关 `risk_service.events_enabled`（**默认关** —— 关着的部署里
+`alerts` / `evaluate` 空集是设定，不是缺陷）。仍待：bundle → `ParseBundle` → `RiskPolicy`（F3 剩余半边）、
+熔断执行方、run 后逐笔裁决事件回传、`POST /events` 的审计留痕（`risk_events` 无 actor 列）、
+生产侧投递的重发 / outbox（见下方「事件回传失败」行的注）、外部推送通道；
 未落项逐条登记在 `docs/TASKS.md` QT-42 施工记录。
 
 ## 2. 关键时序
@@ -59,8 +71,11 @@ core 侧消费接线、熔断执行方、告警生产侧接线（core `alertLoop
    （拿不到就拒绝开跑，不许用「现在生效的」顶替「当初锁定的」）
 8. `GET /api/risk/snapshots/{hash}/bundle` 拉规则包（= canonical snapshot JSON）→
    进程内 `rule.ParseBundle`：重新 derive hash 比对（不符 fail-closed）+ 未知 type/scope 拒收
-   → core 侧据此构建 `RiskPolicy`（**接线未做**，见主链路现状）
-9. 该 hash 写入本次 run 的结果（可复现锚点）——core 侧接线未做（F3，QT-63 生产者仍写空串）
+   → core 侧据此构建 `RiskPolicy`（**接线未做**：core 全仓 `ParseBundle` 零调用点，限额来自它自己的
+   `risk_manager.*` 配置 —— F3 的剩余半边）
+9. 该 hash 写入本次 run 的结果（可复现锚点）——**已落**（2026-10-25，QT-66：core 每次 run 提交时调
+   `POST /api/risk/resolve` 取 hash 写进 `quant.run_provenance.risk_rules_hash`；未接入记空串 +
+   `not_configured`，取不到即 run `failed` + `risk_rules_unavailable`）
 
 ### run 中（热路径，零网络）—— 边界已备，core 接线未做
 
@@ -104,8 +119,8 @@ core 侧消费接线、熔断执行方、告警生产侧接线（core `alertLoop
 | 并发写同一 rule_id | 丢更新 / 双 active | Service 的读-改-写全部在 `Store.Tx` 内：PG 用 `SELECT ... FOR UPDATE` 行锁，Memory 用全量快照回滚；失败整笔回滚 | ✅（ADR-0003；`TestServiceApprove_RollsBackAllWritesOnFailure` / `TestMemoryTx_RollsBackAllWrites`） |
 | 快照 hash 与内容不符（写入 / 读取 / ParseBundle） | 内容寻址被破坏（缓存串号 / 内容被改） | `ErrSnapshotMismatch`，500 `internal` + 告警日志，fail-loud 不吞 | ✅（三处同检：`store.go` 写/读 + `ParseBundle`） |
 | 服务不可用 | 拿不到规则快照 | **拒绝开跑**（不许用默认限额） | ✅（resolve 侧：`no_approved_rules` / `snapshot_not_found` 拒绝；core 接线后由调用方执行） |
-| 规则被改但 run 里没记 hash | 结果不可复现 | `risk_rules_hash` 必写进结果 | ⛔ core 侧接线（F3） |
-| 事件回传失败 | 留痕缺失 | 批量原子落库：整批失败 500 后重试整批（去重键幂等）；单条不合法 207 只重发 failed；允许延迟，不允许丢 | ✅（X3c：`internal/event` + `risk.risk_events` 主键去重） |
+| 规则被改但 run 里没记 hash | 结果不可复现 | `risk_rules_hash` 必写进结果 | ✅（2026-10-25，QT-66 的 core 腿：`core:cmd/analysis/wiring/risk_rules.go` 每次 run 取一次并写进 `quant.run_provenance`；未接入 = 空串 + `not_configured`，取不到 = run `failed`） |
+| 事件回传失败 | 留痕缺失 | 批量原子落库：整批失败 500 后重试整批（去重键幂等）；单条不合法 207 只重发 failed；允许延迟，不允许丢 | 🔶 端点侧 ✅（X3c：`internal/event` + `risk.risk_events` 主键去重）；**生产侧「不允许丢」未兑现** —— core 的 sink 是异步 best-effort：队列满即丢弃并 Warn、5xx / 207 不自动重发、无持久化 outbox（见 `tellurion:docs/TASKS.md` QT-42 X3c core 腿的未落项） |
 | 熔断指令重复 | 重复平仓 | 幂等键 `breaker_id`：同键同载荷 → 200 `already_applied`；同键不同载荷 → 409（不执行） | ✅（X3d：`internal/breaker` + `circuit_orders` 主键） |
 | 鉴权闸未装配 / 角色不足 | 规则与审计被匿名读写 | 所有端点统一 fail-closed：未装配 `Authorizer` → 503，无凭证 → 401，越权 → 403 | ✅（`httpapi.requireAuth`；`TestAuth_ThreeStatesAndActor` / `TestRouteTableEqualsPolicyTable`） |
 | 监控读不到事件（读取端口未装配 / 库错误） | 把「读不到」显示成「没有敞口 / 没有告警」 | `503 dependency_unavailable` 或 500；绝不返回空报告冒充成功 | ✅（`event.ErrMonitorUnavailable`；`TestMonitor_RequiresReader`） |
