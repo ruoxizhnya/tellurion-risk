@@ -99,6 +99,33 @@ verified-by: 派发块 G4 —— 服务间角色 `service` 落策略表（resolv
 >   构建 `RiskPolicy`」仍未接（core 全仓 `ParseBundle` 零调用点，限额来自它自己的 `risk_manager.*` 配置）。
 >   这是跨仓单（core 侧改动），不在本仓。`ParseBundle` 的 Go 类型出现第二个使用方（core）后，
 >   `Snapshot` / `SnapshotRule` 按 ADR-0001 ① 迁 contracts。
+>   **2026-10-25 H3 前提核对（三条实测阻塞；本条仍不得整条划掉）**：派发到 core 的 H3 把「bundle → `ParseBundle`
+>   → 构建 `RiskPolicy`」当成可直接开工的单，按源码核对**前提不成立**：
+>   ① **规则参数词典不存在（根本阻塞）**：`SnapshotRule.Params` 在本仓是 opaque JSONB，四类规则的字段名 / 单位
+>     **没有任何成文口径**——本仓自证夹具的形状就是 `{"pct":2.5}` / `{"max_pct":10}`
+>     （`internal/rule/snapshot_test.go:143-144`），core 侧的限额面是 14 个标量
+>     （`tellurion:pkg/risk/manager.go:13-28`，来自 `tellurion:pkg/bootstrap/engine.go:38-51` 的 `risk_manager.*`），
+>     两边对不上表 ⇒ core 只能猜字段名与单位（`max_pct = 10` 是 10% 还是 10 倍？），而 H3 自己的禁区写着
+>     「不许在 core 侧自造一套 risk 规则解释」。**源头不冻结，这条链无法开工。**
+>     `risk.limits` 也补不上洞：[`db-schema.md`](db-schema.md) §1 明写「本切片只建表，读写路径与端点未冻结」
+>     （本文件 5 条施工记录逐条重复此条）。⇒ 词典展开成 **`QT-74`**（本文件「一、本仓任务」末），排在 contracts 发版与
+>     core 消费**之前**（顺序不可颠倒：先有词典才有值得迁的形状）。
+>   ② **H3 自述的串行前置未落**：工单写「与 H1 的 QT-71 同仓串行」，实测 core 侧 QT-71 ①~③ **未开工**
+>     （`tellurion:pkg/auth` grep `RoleService` = **0 命中**、`tellurion:cmd/analysis/route_policy.go` 无 service 档位、
+>     `tellurion:docs/TASKS.md:1564` 状态仍 ⬜）⇒ H3 排在了自己的前置之前。
+>   ③ **生产 `service` token 到不了角色判定**：即上面第 4 条已报协调者的缺口，源码复核成立——
+>     `tellurion-kit:auth/httpadapter/httpadapter.go:139-141` 对非数字 subject 直接 401「malformed token subject」，
+>     而 `tellurion-kit:auth/service_token.go:46` 把 `sub=service:<repo>` 原样签进 `Subject`（kit 自己的
+>     `service_token_test.go:16/24` 用的就是 `"service:risk"`）。**这条跨仓缝无人覆盖**：kit 的 httpadapter 测试里
+>     `IssueServiceToken` grep 零命中，本仓 `TestPolicy_*` 走的是 `IssueTokens(1, …)` 的数字 subject
+>     （`internal/httpapi/auth_test.go:55`）⇒ 夹具绿不等于生产链路绿，与上面第 4 条同一结论。
+>   **同批订正本条一处取包口径（利好）**：工单写「core 调 `POST /api/risk/resolve` 取 bundle」——实测 `resolve`
+>   的响应**已整包内嵌快照**（`internal/httpapi/api.go:127-130` `resolveBody.Snapshot rule.Snapshot`），而 `resolve`
+>   已开 `service` ⇒ core 取包**不需要**新开 `bundle` 档位，上面未落项第 5 条的「若 core 直接拉 `bundle` 需新开一单」
+>   这条**条件不触发**，档位保持不开（本仓因此仍是零代码改动）。
+>   验收三条按实测拆读：「换规则 → `run_spec_hash` 变」✅（`tellurion:pkg/backtest/qt66_risk_rules_test.go:113` 已断言）、
+>   「同 hash 两次逐位一致」+「篡改即 `ErrSnapshotMismatch` fail-closed」✅（本仓 `TestAPI_ResolveLatestAndSnapshotByteIdentity`
+>   + `internal/rule/snapshot_test.go:266` 篡改腿）——**唯一真未落 = 「限额来自快照」，被 ① 卡住。**
 
 > **施工记录（2026-10-24 · PG Store + 迁移执行 + 事务边界）**
 >
@@ -411,6 +438,66 @@ verified-by: 派发块 G4 —— 服务间角色 `service` 落策略表（resolv
 
 ---
 
+### QT-74 · 规则参数词典：四类规则的 `params` 字段名 / 单位 / scope 消费口径 [P1] ⬜
+
+> 2026-10-25 由 H3（core 侧消费接线）前提核对展开成六字段单。触发点是 QT-42 未落项 3' 的 ①：**源头不冻结词典，
+> `bundle` → `ParseBundle` → `RiskPolicy` 这条链只能由消费方猜字段名和单位**——那是本项目算错过钱的缺陷类型
+> （contracts `AGENTS.md` §4 钉的 fee 漂移事故：滑点写成 0.001、佣金写成 0.00025）。本单**只在本仓落词典**，
+> 迁 contracts 与 core 消费都在本单之后（顺序不可颠倒：先有词典才有值得迁的形状）。
+
+- **① 目标**：`docs/db-schema.md` + `docs/api-schema.md` 里出现一份**四类规则各自的 `params` 字段清单**，每字段带
+  名称 / 类型 / 单位 / 取值域 / 必填性，使 core 能把 bundle **逐字段**映射到它的限额面，而无需读 risk 的实现或猜单位。
+- **② 上下文（2026-10-25 实测）**：`SnapshotRule.Params` 是 `json.RawMessage`，`canonicalParams`
+  （`internal/rule/model.go:150`）只校验「是非空 JSON 对象、≤64 KiB」，**不看键名**；`RuleType` 四个值冻结在
+  `internal/rule/model.go:15-18`。消费侧形状 = `tellurion:pkg/risk/manager.go:13-28` 的 14 个标量，
+  今天的来源是 `tellurion:config/analysis-service.yaml:155-173` 的 `risk_manager.*`（映射代码
+  `tellurion:pkg/bootstrap/engine.go:38-51`）。**词典按这 14 项 1:1 提案**（键名与 yaml 同名，改名叫 core 猜）：
+
+  | `type` | 字段 | 类型 | 单位 / 口径 | 现值 | 必填 |
+  |---|---|---|---|---|---|
+  | `position_sizing` | `target_volatility` | float | 年化**小数**（0.15 = 15%） | 0.15 | ✅ |
+  | | `max_position_weight` | float | 组合净值**小数**占比，`(0,1]` | 0.10 | ✅ |
+  | | `min_position_weight` | float | 同上，`[0, max]` | 0.01 | ✅ |
+  | | `lookback_days` | int | 交易日，`>0` | 20 | ✅ |
+  | | `annualization_factor` | float | `>0`（√252 ≈ 16.0） | 16.0 | ✅ |
+  | `stop_loss` | `atr_period` | int | bar 数，`>0` | 14 | ✅ |
+  | | `base_multiplier` / `bull_multiplier` / `bear_multiplier` / `sideways_multiplier` | float | **ATR 倍数**，`>0` | 2.5 / 2.0 / 3.5 / 2.5 | ✅ |
+  | `take_profit` | `atr_multiplier` | float | ATR 倍数，`>0` | 3.0 | ✅ |
+  | `regime` | `fast_ma_period` / `slow_ma_period` / `vol_lookback` | int | bar 数，`>0`；且 `fast < slow` | 10 / 20 / 60 | ✅ |
+
+  **单位是这张表里唯一会让人算错钱的列**：权重一律**小数**，禁止 `pct` / 百分数形态——本仓夹具今天的
+  `{"max_pct":10}`（`internal/rule/snapshot_test.go:144`）按小数读就是 10 倍净值、按百分数读是 10%，
+  差两个数量级，故夹具要随本单改成 `{"max_position_weight":0.10}`。
+- **③ 要求**：① 上表进 `docs/db-schema.md`（`rule_snapshots.rules[].params` 节）+ `docs/api-schema.md`
+  （规则 create/update 的输入口径），两处同名同序，**词典是唯一真相源**；
+  ② **写侧严格**：`Create` / `Update` 对 `params` 按 `type` 校验键集合与取值（未知键、缺必填、类型不符、
+  `NaN`/`Inf`、`fast_ma_period >= slow_ma_period` 一律 `ErrInvalidParams` → 400 `invalid_params`）；
+  ③ **读侧不重校键集合**：`ParseBundle` / `SnapshotHash` **不**因词典新增键而拒绝历史快照——否则给词典加一个键
+  会让全部历史 `risk_rules_hash` 集体不可读（与本仓「钉住的历史 hash 永不失效」不变量 8 冲突）；
+  ④ **scope 消费口径**：一期 core 只消费 `scope = global`；`account` / `strategy` / `symbol` 三档在 bundle 里
+  **可见但本 run 不参与裁决**，这一条要显式写进 `docs/dataflow.md`，**不许静默忽略**（回测没有账户身份是事实，
+  不是缺陷；但「下发了却没用」必须看得见）；
+  ⑤ `risk.limits` 的 `limit_key`：本单**要么**冻结它并给词典的引用，**要么**在 `docs/db-schema.md` §1 明确
+  「限额走 `rule_snapshots`，`risk.limits` 是遗留空表、无生产者」——**二选一，不许继续两头都不写**（这条在
+  本文件 5 条施工记录里重复了 5 次）；
+  ⑥ 词典的**变更规则成文**：加字段/加类型 = MINOR；**改某字段的单位 = breaking 且必须换域标签**
+  （`DomainSnapshotHash` / `DomainVersionHash` 升 v2）——因为单位改了而键名没变时 **hash 一个字节都不变**，
+  历史 run 的含义会静默漂移，这是本单最危险的一条。
+- **④ 约束与非目标**：**不**迁 contracts（那是词典落定后、core 真要消费时的下一张单）；**不**改 `SnapshotHash` /
+  `canonicalParams` 的编码算法（改 = 全历史 hash 作废，要 ADR 级裁决）；**不**碰 core 的任何文件；
+  **不**给 `bundle` / `snapshots/{hash}` 开 `service` 档位（H3 核对已证 `resolve` 响应内嵌快照，条件不触发）；
+  **不**在本单实现 core 的 `RiskPolicy` 装配；不改四类 `RuleType` 的既有取值集（新增另计 MINOR）。
+- **⑤ 验收**：① 词典在两份文档里逐字段可查（字段名 / 类型 / 单位 / 必填四列齐，无「待定」）；
+  ② 每条词典规则有 fail-closed 测试（未知键 / 缺必填 / 单位形态错 / `NaN` / `fast>=slow` 各一条，
+  断言哨兵是 `ErrInvalidParams`）；③ 历史快照兼容腿：对**词典之前**写入的 params 原文调 `ParseBundle` 仍成功
+  （读侧不重校）；④ `go build ./... && go vet ./... && go test ./... -count=1` 全绿（真退出码）。
+  **破坏验证**：把一个必填键从词典删掉但保留夹具里的该键 ⇒ 写侧「未知键即拒」那条必须红；
+  把 `max_position_weight` 夹具值从 `0.10` 改成 `10`（百分数形态）⇒ 取值域校验必须红。两处逐字节还原后复跑绿。
+- **⑥ 边界**：只到「本仓把 params 的形状与单位说清楚 + 写侧守住」；`Snapshot`/`SnapshotRule`/`Bundle` 迁 contracts、
+  core 侧 bundle→限额映射、`risk.limits` 若要端点则另立单，**都在本单之外**。
+
+---
+
 > **开工前置（refactor-plan-review M5/M8，2026-10-20 登记；2026-10-22 更新执行状态）**：本表任何单开工前，必须先过 core `tellurion:docs/TASKS.md`「五、X 线」的**公共前置**两条：
 > ① **M5 已结案（2026-10-21）** → `tellurion:docs/design/qt-decoupling/repo-inventory.md` §1.2：**六仓 ≠ 六进程**，本仓今天只到「仓内实现 + core 侧 port」，不升格容器；U7（compliance / alert 归属）**已裁（2026-10-24，见文首：检测器留 core，通道编排与报送归本仓）**。
 > ② **M8 接口对表已落（2026-10-22）** → 本仓 [`ARCHITECTURE.md`](ARCHITECTURE.md) §9（模板 = `tellurion:docs/design/qt-decoupling/data-service-contract-and-ownership.md` §4.1；**本行原指的 `target-module-topology.md` UnifiedDataPoint 节是幻影引用，已订正**）。
@@ -425,7 +512,7 @@ verified-by: 派发块 G4 —— 服务间角色 `service` 落策略表（resolv
 | 阶段 | 内容 | 上游单号 | 前置 |
 |---|---|---|---|
 | X3a | 规则定义 + revision + 审批状态机（draft→approved→active→deprecated） | `QT-42` | 🔶 已实装（`internal/rule` + `internal/httpapi` 4 端点；PG Store / 迁移执行 / 事务边界已落）；鉴权已落（2026-10-25，ADR-0005）+ 服务间角色 `service` 已落（2026-10-25，ADR-0006：`resolve` / `events` 两条） |
-| X3b | 快照内容寻址 + `resolve` / `bundle` | `QT-42` | 🔶 已实装（2026-10-23：`rule_snapshots` DDL + 三端点 + `ParseBundle` 边界；Memory/PG 双实现）；F3 订正（2026-10-25）：✅ `risk_rules_hash` 生产者已落真值（core QT-66），⬜ `bundle` → `ParseBundle` → `RiskPolicy` 半边未接 |
+| X3b | 快照内容寻址 + `resolve` / `bundle` | `QT-42` | 🔶 已实装（2026-10-23：`rule_snapshots` DDL + 三端点 + `ParseBundle` 边界；Memory/PG 双实现）；F3 订正（2026-10-25）：✅ `risk_rules_hash` 生产者已落真值（core QT-66），⬜ `bundle` → `ParseBundle` → `RiskPolicy` 半边未接 —— **未接的原因是词典缺失，前置 = `QT-74`（本仓，见上）**；顺序 **QT-74 → `Snapshot`/`Bundle` 迁 contracts 发版 → core 消费**，不可颠倒 |
 | X3c | 事件回传（异步批量）+ 监控聚合（敞口 / 告警） | `QT-42` | ✅ 事件回传（2026-10-24：`risk.risk_events` + `POST /events`，200/207 + 去重键）+ 监控 3 端点（2026-10-24：只读 `risk_events` 聚合/报表，ADR-0004；鉴权闸 fail-closed）+ **生产侧已接线（2026-10-25，core 腿）**：core 告警按 `verdict:"alert"` 回传 ⇒ `alerts` / `evaluate` 不再是结构性空集（开关默认关；生产侧已改持久 outbox，2026-10-25 二批 core `tellurion:a53fe95`） |
 | X3d | 熔断指令（幂等键） | `QT-42` | 🔶 已实装（2026-10-24：`risk.circuit_orders` + `POST /breakers`，幂等键 + 409）；执行方 / ACK 未落 |
 
