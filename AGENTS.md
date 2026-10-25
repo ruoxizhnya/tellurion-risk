@@ -71,7 +71,7 @@ go test ./...
 | 依赖 | 版本 | 说明 |
 |---|---|---|
 | `github.com/ruoxizhnya/tellurion-contracts` | 未引入（远端最新 `v0.6.0`，2026-10-24 发版；2026-10-25 实测远端 tag 确为 `v0.6.0`） | `RiskPolicy` 相关 DTO 只认契约；当前规则侧零跨仓依赖（实测本仓对 contracts 的 import = **0**），接入时 pin tag 不 pin 伪版本 |
-| `github.com/ruoxizhnya/tellurion-kit` | `v0.1.1` | 鉴权机制：`auth`（token 签发 / 解析）+ `auth/httpadapter`（net/http 适配、启动闸、Policy）。本仓只写策略表，不另造 token 校验 |
+| `github.com/ruoxizhnya/tellurion-kit` | `v0.1.4`（2026-10-25 从 `v0.1.1` 升，KT-11） | 鉴权机制：`auth`（token 签发 / 解析）+ `auth/httpadapter`（net/http 适配、启动闸、Policy）。本仓只写策略表，不另造 token 校验。**`v0.1.4` 起 `role=service` 的非数字 subject 不再被 401**——这是本仓 resolve/events 两条 service 档位真正可用的起点 |
 | `github.com/jackc/pgx/v5` | `v5.7.5` | PostgreSQL 驱动。仅 `cmd/riskservice` 空白导入 `stdlib` 注册 `database/sql` 驱动；`internal/pgstore` 只用 `database/sql`，不直接依赖 pgx API（`pgconn` 仅用于唯一约束错误识别） |
 
 > 跨仓依赖**只认版本号**（伪版本或 tag），不认源码路径。契约变更走 `tellurion-contracts` 的发布，不走"顺手改一下"。
