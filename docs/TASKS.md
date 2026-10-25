@@ -178,7 +178,11 @@ verified-by: W2 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计
 > 6. `risk.limits` 的读写路径与端点：表已建，读取口径未冻结。
 > 7. `rule_deprecated` 错误码不可达（冻结接口面无 deprecate 端点）。
 > 8. **core 调本仓的 token 分发（跨仓）**：鉴权开启后 core 侧调用 `resolve` / `events` / `breakers`
->    必须持 `trader` 及以上 token；分发不在本仓。
+>    必须带服务间凭证。**口径已定（裁-17 定稿，2026-10-25）**：使用 **`service` 角色**的长期 access token
+>    （**不是** `trader` —— `trader` 同时可下实盘单，凭证泄露面不可接受），`sub=service:core`、TTL 30d、
+>    只经 env（`RISK_SERVICE_RESOLVE_TOKEN` / `RISK_SERVICE_EVENTS_TOKEN`）注入。**本仓腿**：`internal/httpapi/policy.go`
+>    的 `POST /api/risk/resolve` 与 `POST /api/risk/events` 两条 Roles 加 `"service"`（`GET /api/risk/audit` **不加**）；
+>    守卫测试断言 service token 可 resolve/events、调 `/api/execution/*` 不涉及本仓。分发与部署清单不在本仓（core QT-71）。
 >
 > **收编说明**：原列表的「`Authorizer` 实现」「审计读取无 HTTP 端点」「鉴权与 actor」三条已由本笔关闭。
 
