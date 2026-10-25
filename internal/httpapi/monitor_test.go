@@ -13,11 +13,13 @@ import (
 	"tellurion-risk/internal/rule"
 )
 
-type authFunc func(*http.Request) error
+type authFunc func(*http.Request) (Principal, error)
 
-func (f authFunc) Authorize(r *http.Request) error { return f(r) }
+func (f authFunc) Authorize(r *http.Request) (Principal, error) { return f(r) }
 
-func allowAll(*http.Request) error { return nil }
+func allowAll(*http.Request) (Principal, error) {
+	return Principal{Username: "test-user", Role: "admin"}, nil
+}
 
 type monitorHarness struct {
 	srv    *Server
@@ -81,11 +83,6 @@ func TestMonitor_NoAuthorizerFailsClosed(t *testing.T) {
 		resp, body := h.do(t, tc.method, tc.path, tc.body)
 		wantCode(t, resp.StatusCode, body, http.StatusServiceUnavailable, "auth_unavailable")
 	}
-
-	// 闸只挂在 monitor/*：其余端点仍是既有行为（QT-50 ④ 未落），不要顺手扩大/缩小。
-	if resp, body := h.do(t, http.MethodGet, "/api/risk/rules", ""); resp.StatusCode != http.StatusOK {
-		t.Fatalf("rules endpoint must stay unchanged: %d %s", resp.StatusCode, body)
-	}
 }
 
 func TestMonitor_AuthorizerOutcomes(t *testing.T) {
@@ -95,9 +92,9 @@ func TestMonitor_AuthorizerOutcomes(t *testing.T) {
 		wantStatus int
 		wantCode   string
 	}{
-		{"unauthenticated", func(*http.Request) error { return ErrUnauthenticated }, http.StatusUnauthorized, "unauthenticated"},
-		{"forbidden", func(*http.Request) error { return ErrForbidden }, http.StatusForbidden, "forbidden"},
-		{"broken authorizer", func(*http.Request) error { return errors.New("boom") }, http.StatusInternalServerError, "internal"},
+		{"unauthenticated", func(*http.Request) (Principal, error) { return Principal{}, ErrUnauthenticated }, http.StatusUnauthorized, "unauthenticated"},
+		{"forbidden", func(*http.Request) (Principal, error) { return Principal{}, ErrForbidden }, http.StatusForbidden, "forbidden"},
+		{"broken authorizer", func(*http.Request) (Principal, error) { return Principal{}, errors.New("boom") }, http.StatusInternalServerError, "internal"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

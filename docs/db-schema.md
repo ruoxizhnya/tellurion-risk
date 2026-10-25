@@ -123,7 +123,8 @@ verified-by: QT-42 监控 3 端点——risk_events 时间索引与告警投影�
 
 ## 6. 待定
 
-- **审计 actor 来源**：鉴权面（QT-50 ④）未落，当前审计 `actor` 为空串；角色矩阵与 actor 注入方式随 QT-50 定（R4）。
+- **审计 actor 来源（2026-10-25 已落）**：鉴权挂在全部端点（ADR-0005），`actor` 从 claims 取 `username`
+  （缺失退 `subject`）；显式 open-access（无 secret + 回环）记常量 `open-access`，**不再写空串**。
 - **`risk.limits` 的读写路径**：表已建，但限额的读取口径（快照附带 / 独立端点）与写入端点未冻结（R2 相关）。
 - **事件监控聚合（读取侧）**：~~随 U7 未裁~~ ✅ 2026-10-24（ADR-0004）——三端点只读 `risk_events`。
   仍未落：core `alertLoop` 把告警投 `POST /events`（生产侧接线）、外部推送通道（webhook / 消息平台）。

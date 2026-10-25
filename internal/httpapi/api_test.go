@@ -19,6 +19,10 @@ type harness struct {
 }
 
 func newHarness(t *testing.T) *harness {
+	return newHarnessWithAuthorizer(t, authFunc(allowAll))
+}
+
+func newHarnessWithAuthorizer(t *testing.T, authorizer Authorizer) *harness {
 	t.Helper()
 	svc, err := rule.New(rule.Options{
 		Store: rule.NewMemory(),
@@ -41,8 +45,26 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatalf("breaker.New: %v", err)
 	}
-	srv := New(svc, WithEvents(events), WithBreakers(breakers))
+	srv := New(svc, WithEvents(events), WithBreakers(breakers), WithAuthorizer(authorizer))
 	return &harness{srv: srv, client: &http.Client{}}
+}
+
+func (h *harness) doAuth(t *testing.T, method, path, body, token string) (*http.Response, string) {
+	t.Helper()
+	var rdr *bytes.Reader
+	if body == "" {
+		rdr = bytes.NewReader(nil)
+	} else {
+		rdr = bytes.NewReader([]byte(body))
+	}
+	req := httptest.NewRequest(method, path, rdr)
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	rec := httptest.NewRecorder()
+	h.srv.Handler().ServeHTTP(rec, req)
+	return rec.Result(), rec.Body.String()
 }
 
 func (h *harness) do(t *testing.T, method, path, body string) (*http.Response, string) {

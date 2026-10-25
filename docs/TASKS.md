@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-24
-verified-by: QT-42 监控 3 端点实装（施工记录已落）
+last-verified: 2026-10-25
+verified-by: W2 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计读 + 启动闸，ADR-0005）
 ---
 
 # TASKS — tellurion-risk 未完成项
@@ -130,9 +130,54 @@ verified-by: QT-42 监控 3 端点实装（施工记录已落）
 > 7. `risk.limits` 的读写路径与端点：表已建，读取口径（快照附带 / 独立端点）未冻结。
 > 8. 审计读取无 HTTP 端点：`Store.ListAudit` 只有进程内接口。
 > 9. `rule_deprecated` 错误码不可达（冻结接口面无 deprecate 端点）。
+
 > 10. **core 侧消费接线（跨仓）**：`risk_rules_hash` 生产者仍写空串（F3）；需 core 在 run 前
 >    `resolve` → `ParseBundle` → 写 `run_provenance`。不在本仓施工，已报协调者。
 >    **2026-10-25 裁决已落（core `裁-10` / `裁-11`）**：core 每次 run 提交时调 `POST /api/risk/resolve`（run_spec 钉 hash 走锁定、否则 `latest`）；只有「本部署未接入 risk」允许空串并记 `not_configured`，配置了但取不到（含 `no_approved_rules` / `snapshot_not_found` / 5xx / 超时）一律 run `failed` + `risk_rules_unavailable`。本仓端点无需改动，F3 可直接开工。
+
+> **施工记录（2026-10-25 · W2 鉴权接线：kit 适配 + 审计读 + 启动闸）**
+>
+> 已交付（本仓，ADR-0005）：
+>
+> - `internal/httpapi/auth.go`：`Authorizer` 接口改为返回 `Principal`；`NewAuthorizer` 接 kit
+>   `v0.1.1` 的 `auth/httpadapter`（`Authenticate` = Bearer → `Parse` → 拒 `kind!=access` → 校验 subject；
+>   `Authorize` = Public / AnyAuthenticated / Roles，角色 any-of）；`requireAuth` 三态不变
+>   （未装配 503 / 无凭证 401 / 越权 403），通过后把身份放进 context。
+> - `internal/httpapi/policy.go`：全端点「路由 → 角色」表（读 viewer、写 trader、规则发布/审批 admin；
+>   `resolve` / `events` / `breakers` 按写口径，`monitor/evaluate` 按读口径）。路由注册与策略表同源，
+>   `TestRouteTableEqualsPolicyTable` 双向对拍。
+> - `internal/httpapi/api.go`：所有路由统一包 `requireAuth`（不再只有 monitor/*）；新增
+>   `GET /api/risk/audit?rule_id=`（viewer，空列表 `[]`）；`create`/`update`/`approve` 的 `Actor`
+>   取自 claims（缺失退 subject），open-access 记常量 `open-access`，**审计 actor 非空串**。
+> - `cmd/riskservice`：`-jwt-secret` / `JWT_SECRET` + `-insecure-exposure` / `AUTH_INSECURE_EXPOSURE`；
+>   启动闸 `DecideStartup`——有 secret 开鉴权，无 secret + 回环 = 开放，无 secret + 非回环 = **拒绝启动**。
+> - 依赖登记：`github.com/ruoxizhnya/tellurion-kit v0.1.1`（AGENTS §4）。
+> - 测试：`TestRouteTableEqualsPolicyTable`（路由 ≡ 策略）、`TestAuth_ThreeStatesAndActor`
+>   （503/401/403 + 角色档位 + 审计 actor 来自 claims）、`TestAuth_OpenAccessOnLoopback`
+>   （显式开放的 actor 仍非空）；monitor 旧用例同步到新 `Authorizer` 签名。
+> - 文档同笔：`api-schema.md`（审计读 + 全端点鉴权 + actor 来源）、`db-schema.md` §6、`dataflow.md`
+>   （鉴权闸步骤/失败表/不变量）、`ARCHITECTURE.md` §3.1/§9.4/§9.7 R4、`AGENTS.md` §1/§4、README、doc.go、
+>   ADR-0005 + ADR 索引。
+>
+> 验收：`go build ./... && go vet ./... && go test ./... -count=1` 全绿。
+> 破坏验证：删掉策略表里的 `GET /api/risk/audit` 条目 ⇒ `TestRouteTableEqualsPolicyTable` 红
+> （route 13 vs policy 12）且 `TestAuth_ThreeStatesAndActor` 的 audit 403；逐字节还原
+> （`sha256 98272F27…`）后两条复跑绿。
+>
+> 未落项（本条**取代**上一条列表）：
+>
+> 1. **外部推送通道**（webhook / 消息平台）与节流：本切片只做 HTTP 报表，不主动推送。
+> 2. **core `alertLoop` 投递告警**：接线前 `alerts` / `evaluate` 只会看到空集。
+> 3. **敞口口径的生产侧约定**：`account` / `strategy` / `side` / `qty` / `price` / `notional` 需生产者写入
+>    `payload`；漏写按 `unpriced_events` / `unsigned_events` 显性计数。
+> 4. **熔断执行方与 ACK**：`circuit_orders.status` 今天只写 `applied`；随升格 ADR。
+> 5. **core 侧消费接线（跨仓）**：`risk_rules_hash` 生产者仍写空串（F3）。
+> 6. `risk.limits` 的读写路径与端点：表已建，读取口径未冻结。
+> 7. `rule_deprecated` 错误码不可达（冻结接口面无 deprecate 端点）。
+> 8. **core 调本仓的 token 分发（跨仓）**：鉴权开启后 core 侧调用 `resolve` / `events` / `breakers`
+>    必须持 `trader` 及以上 token；分发不在本仓。
+>
+> **收编说明**：原列表的「`Authorizer` 实现」「审计读取无 HTTP 端点」「鉴权与 actor」三条已由本笔关闭。
 
 > **施工记录（2026-10-24 · X3c 事件回传）**
 >
@@ -256,7 +301,7 @@ verified-by: QT-42 监控 3 端点实装（施工记录已落）
 
 | 阶段 | 内容 | 上游单号 | 前置 |
 |---|---|---|---|
-| X3a | 规则定义 + revision + 审批状态机（draft→approved→active→deprecated） | `QT-42` | 🔶 已实装（`internal/rule` + `internal/httpapi` 4 端点；PG Store / 迁移执行 / 事务边界已落）；鉴权未落 |
+| X3a | 规则定义 + revision + 审批状态机（draft→approved→active→deprecated） | `QT-42` | 🔶 已实装（`internal/rule` + `internal/httpapi` 4 端点；PG Store / 迁移执行 / 事务边界已落）；鉴权已落（2026-10-25，ADR-0005） |
 | X3b | 快照内容寻址 + `resolve` / `bundle` | `QT-42` | 🔶 已实装（2026-10-23：`rule_snapshots` DDL + 三端点 + `ParseBundle` 边界；Memory/PG 双实现）；core 侧消费接线（F3）未落 |
 | X3c | 事件回传（异步批量）+ 监控聚合（敞口 / 告警） | `QT-42` | ✅ 事件回传（2026-10-24：`risk.risk_events` + `POST /events`，200/207 + 去重键）+ 监控 3 端点（2026-10-24：只读 `risk_events` 聚合/报表，ADR-0004；鉴权闸 fail-closed） |
 | X3d | 熔断指令（幂等键） | `QT-42` | 🔶 已实装（2026-10-24：`risk.circuit_orders` + `POST /breakers`，幂等键 + 409）；执行方 / ACK 未落 |

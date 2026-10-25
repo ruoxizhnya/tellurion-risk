@@ -7,8 +7,9 @@
 //   - internal/event      事件回传（去重落库）与监控聚合读取（exposure / alerts / evaluate）
 //   - internal/breaker    熔断指令（幂等键）
 //   - internal/pgstore    PostgreSQL 实现（rule / event / breaker + 监控读取）与启动迁移
-//   - internal/httpapi    12 个 HTTP 端点（严格解码 + 错误码映射；monitor/* 过 Authorizer 闸）
+//   - internal/httpapi    13 个 HTTP 端点（严格解码 + 错误码映射；全部过 Authorizer 闸；
+//     auth.go = kit net/http 适配，policy.go = 路由 → 角色策略表）
 //   - cmd/riskservice     服务入口
 //
-// 本仓当前零跨仓依赖（contracts / kit 均未引入），单独 checkout 即可 go build / vet / test。
+// 跨仓依赖只有 tellurion-kit（鉴权机制）；contracts 未引入。单独 checkout 即可 go build / vet / test。
 package risk

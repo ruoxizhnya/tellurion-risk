@@ -1,6 +1,6 @@
 # tellurion-risk
 
-> module: `tellurion-risk` ｜ 状态：**🔶 首批实装（QT-42）——规则 / 快照 / 事件 / 熔断 / 监控 3 端点已落地；Authorizer（QT-50 ④）与 core 侧接线未接**
+> module: `tellurion-risk` ｜ 状态：**🔶 首批实装（QT-42）——规则 / 快照 / 审计读 / 事件 / 熔断 / 监控 3 端点已落地；鉴权已接（kit 适配 + 全端点策略表）；core 侧消费接线未接**
 
 风控规则的**真相源**：规则定义、限额表、聚合监控与熔断。**同步裁决（`RiskPolicy`）留在 core 进程内**。
 
@@ -13,7 +13,7 @@
 | `internal/event/` | 事件回传 + 去重落库；监控聚合读取（exposure / alerts / evaluate 投影） |
 | `internal/breaker/` | 熔断指令 + 幂等键 |
 | `internal/pgstore/` | PG 实现（rule / event / breaker + 监控读取）与启动迁移 |
-| `internal/httpapi/` | 12 个端点 + 严格解码 + 错误码映射 + monitor/* 鉴权闸（标准库 `net/http`） |
+| `internal/httpapi/` | 13 个端点 + 严格解码 + 错误码映射 + 全端点鉴权闸（标准库 `net/http`；`auth.go` 是 kit 适配，`policy.go` 是策略表） |
 | `docs/` | 本仓文档：台账 / 边界 / 决策 / 归档 —— 从这里进：`docs/README.md` |
 | `AGENTS.md` | 本仓入口（构建、边界、禁止、依赖版本） |
 | `doc.go` | 仓级文档锚点（无实现代码） |
@@ -34,7 +34,8 @@ go run ./cmd/riskservice -addr 127.0.0.1:8086
 
 `POST /api/risk/rules` → `PUT /api/risk/rules/{id}` → `POST /api/risk/rules/{id}/approve` → `GET /api/risk/rules?scope=&active=`。
 
-`monitor/*` 三端点必须过鉴权闸；`Authorizer` 未装配时一律 `503 auth_unavailable`（fail-closed，不是匿名可读）。
+所有端点都必须过鉴权闸；`Authorizer` 未装配时一律 `503 auth_unavailable`（fail-closed，不是匿名可读）。
+有 `JWT_SECRET` 时启用鉴权（读 viewer / 写 trader / 审批 admin）；无 secret + 回环 = 开放，无 secret + 非回环 = **拒绝启动**。
 
 本仓**单独 checkout 就能跑通**上面三条。需要别的仓源码才过 → 边界错了，不是加 `replace` 能解决的问题。
 

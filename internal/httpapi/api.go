@@ -15,9 +15,9 @@ import (
 // MaxBodyBytes 是单个请求体上限。管理面只有小 JSON。
 const MaxBodyBytes = 1 << 20
 
-// Server 是规则真相源的 HTTP 面（4 个规则管理端点 + 3 个快照端点 + 事件回传 +
-// 熔断指令 + 3 个监控端点）。monitor/* 只读 risk.risk_events 做聚合与报表，
-// 检测器仍在 core 进程内（ADR-0004）。
+// Server 是规则真相源的 HTTP 面（4 个规则管理端点 + 3 个快照端点 + 审计读 +
+// 事件回传 + 熔断指令 + 3 个监控端点）。monitor/* 只读 risk.risk_events 做聚合与报表，
+// 检测器仍在 core 进程内（ADR-0004）。所有端点都过鉴权闸（fail-closed）。
 type Server struct {
 	svc        *rule.Service
 	events     *event.Service
@@ -26,8 +26,8 @@ type Server struct {
 	mux        *http.ServeMux
 }
 
-// Option 按需装配可选服务（事件 / 熔断）与监控鉴权闸；事件 / 熔断不装配则不注册路由，
-// 鉴权闸不装配则 monitor/* 一律拒绝服务（fail-closed）。
+// Option 按需装配可选服务（事件 / 熔断）与鉴权闸；事件 / 熔断不装配则不注册路由，
+// 鉴权闸不装配则一律拒绝服务（fail-closed）。
 type Option func(*Server)
 
 // WithEvents 装配 X3c 事件回传端点。
@@ -40,30 +40,61 @@ func WithBreakers(svc *breaker.Service) Option {
 	return func(s *Server) { s.breakers = svc }
 }
 
-// New 构造 Server 并注册路由。
+// routeSpec 是「注册模式 + handler」。路由表与 policy 表由守卫测试双向对拍，
+// 因此注册必须走同一份列表，不允许在别处零散 Handle。
+type routeSpec struct {
+	pattern string
+	handler http.HandlerFunc
+}
+
+// routes 返回本 Server 实际注册的路由表。可选服务未装配时对应路由不出现。
+func (s *Server) routes() []routeSpec {
+	out := []routeSpec{
+		{"POST /api/risk/rules", s.createRule},
+		{"GET /api/risk/rules", s.listRules},
+		{"PUT /api/risk/rules/{id}", s.updateRule},
+		{"POST /api/risk/rules/{id}/approve", s.approveRule},
+		{"POST /api/risk/resolve", s.resolve},
+		{"GET /api/risk/snapshots/{hash}", s.getSnapshot},
+		// bundle 与快照本体同一形状：规则包就是 canonical snapshot JSON，ParseBundle 直接吃
+		//（run 前 1 次，按 hash 缓存永不失效）。
+		{"GET /api/risk/snapshots/{hash}/bundle", s.getSnapshot},
+		// 审计读：Store.ListAudit 的对外面（viewer）。
+		{"GET /api/risk/audit", s.listAudit},
+	}
+	if s.events != nil {
+		out = append(out,
+			routeSpec{"POST /api/risk/events", s.ingestEvents},
+			// 监控端点读的是跨账户 / 跨策略敞口与告警：同样过鉴权闸。
+			routeSpec{"GET /api/risk/monitor/exposure", s.monitorExposure},
+			routeSpec{"GET /api/risk/monitor/alerts", s.monitorAlerts},
+			routeSpec{"POST /api/risk/monitor/evaluate", s.monitorEvaluate},
+		)
+	}
+	if s.breakers != nil {
+		out = append(out, routeSpec{"POST /api/risk/breakers", s.applyBreaker})
+	}
+	return out
+}
+
+// routePatterns 只返回注册模式，守卫测试用它与 policy 表对拍。
+func (s *Server) routePatterns() []string {
+	specs := s.routes()
+	out := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		out = append(out, spec.pattern)
+	}
+	return out
+}
+
+// New 构造 Server 并注册路由。每个路由都挂 requireAuth（未装配 Authorizer → 503）。
 func New(svc *rule.Service, opts ...Option) *Server {
 	s := &Server{svc: svc, mux: http.NewServeMux()}
 	for _, opt := range opts {
 		opt(s)
 	}
-	s.mux.HandleFunc("POST /api/risk/rules", s.createRule)
-	s.mux.HandleFunc("GET /api/risk/rules", s.listRules)
-	s.mux.HandleFunc("PUT /api/risk/rules/{id}", s.updateRule)
-	s.mux.HandleFunc("POST /api/risk/rules/{id}/approve", s.approveRule)
-	s.mux.HandleFunc("POST /api/risk/resolve", s.resolve)
-	s.mux.HandleFunc("GET /api/risk/snapshots/{hash}", s.getSnapshot)
-	// bundle 与快照本体同一形状：规则包就是 canonical snapshot JSON，ParseBundle 直接吃
-	//（run 前 1 次，按 hash 缓存永不失效）。
-	s.mux.HandleFunc("GET /api/risk/snapshots/{hash}/bundle", s.getSnapshot)
-	if s.events != nil {
-		s.mux.HandleFunc("POST /api/risk/events", s.ingestEvents)
-		// 监控端点读的是跨账户 / 跨策略敞口与告警：必须过鉴权闸。
-		s.mux.Handle("GET /api/risk/monitor/exposure", s.requireAuth(http.HandlerFunc(s.monitorExposure)))
-		s.mux.Handle("GET /api/risk/monitor/alerts", s.requireAuth(http.HandlerFunc(s.monitorAlerts)))
-		s.mux.Handle("POST /api/risk/monitor/evaluate", s.requireAuth(http.HandlerFunc(s.monitorEvaluate)))
-	}
-	if s.breakers != nil {
-		s.mux.HandleFunc("POST /api/risk/breakers", s.applyBreaker)
+	for _, spec := range s.routes() {
+		s.mux.Handle(spec.pattern, s.requireAuth(spec.handler))
 	}
 	return s
 }
@@ -86,6 +117,11 @@ type ruleBody struct {
 type listBody struct {
 	Rules []rule.RuleView `json:"rules"`
 	Count int             `json:"count"`
+}
+
+type auditBody struct {
+	Audit []rule.AuditEntry `json:"audit"`
+	Count int               `json:"count"`
 }
 
 type resolveBody struct {
@@ -115,6 +151,7 @@ func (s *Server) createRule(w http.ResponseWriter, r *http.Request) {
 		writeInvalidParams(w, err)
 		return
 	}
+	req.Actor = actorOf(r)
 	def, rev, created, err := s.svc.Create(r.Context(), req)
 	if err != nil {
 		writeError(w, err)
@@ -146,6 +183,7 @@ func (s *Server) updateRule(w http.ResponseWriter, r *http.Request) {
 		writeInvalidParams(w, errors.New("rule_id in body does not match path"))
 		return
 	}
+	req.Actor = actorOf(r)
 	_, rev, err := s.svc.Update(r.Context(), req)
 	if err != nil {
 		writeError(w, err)
@@ -173,6 +211,7 @@ func (s *Server) approveRule(w http.ResponseWriter, r *http.Request) {
 		writeInvalidParams(w, errors.New("rule_id in body does not match path"))
 		return
 	}
+	req.Actor = actorOf(r)
 	_, rev, err := s.svc.Approve(r.Context(), req)
 	if err != nil {
 		writeError(w, err)
@@ -203,6 +242,22 @@ func (s *Server) listRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, listBody{Rules: rules, Count: len(rules)})
+}
+
+// listAudit 返回某条规则的审计（写操作必留痕；actor 来自鉴权 claims，不自报）。
+// 查询参数 rule_id 必填；空结果编码为 []，不是 null。
+func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
+	ruleID := r.URL.Query().Get("rule_id")
+	if ruleID == "" {
+		writeInvalidParams(w, errors.New("rule_id is required"))
+		return
+	}
+	entries, err := s.svc.Audit(r.Context(), ruleID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, auditBody{Audit: entries, Count: len(entries)})
 }
 
 // resolve 把 run 前引用解析成快照元数据（钉 hash 或 latest，二选一）。

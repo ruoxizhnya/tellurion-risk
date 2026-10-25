@@ -67,6 +67,13 @@ core 侧消费接线、熔断执行方、告警生产侧接线（core `alertLoop
 10. 每笔 `CheckOrder(order)` → 进程内裁决 → 通过 / 拒绝 / 降规模
 11. 事件进本地队列
 
+### 鉴权闸（所有端点，同步；2026-10-25）
+
+0. 每个请求先过 `requireAuth`：未装配 `Authorizer` → `503 auth_unavailable`；有 secret 时按 kit
+   `auth/httpadapter` 验 `Bearer` access token（拒 refresh / 坏签名 / 过期）→ 401，角色不在策略表 → 403；
+   通过后把 `Principal` 放进 context，审计 `actor` 从这里取（open-access 记 `open-access`）。
+   策略表（读 viewer / 写 trader / 审批 admin）与路由表由守卫测试双向对拍。
+
 ### run 后（异步）—— ✅ X3c / X3d / 监控（只读）
 
 12. 批量 `POST /api/risk/events` → 逐条校验（缺 `run_id` / `order_id` / `ts` 记 failed）→
@@ -100,7 +107,7 @@ core 侧消费接线、熔断执行方、告警生产侧接线（core `alertLoop
 | 规则被改但 run 里没记 hash | 结果不可复现 | `risk_rules_hash` 必写进结果 | ⛔ core 侧接线（F3） |
 | 事件回传失败 | 留痕缺失 | 批量原子落库：整批失败 500 后重试整批（去重键幂等）；单条不合法 207 只重发 failed；允许延迟，不允许丢 | ✅（X3c：`internal/event` + `risk.risk_events` 主键去重） |
 | 熔断指令重复 | 重复平仓 | 幂等键 `breaker_id`：同键同载荷 → 200 `already_applied`；同键不同载荷 → 409（不执行） | ✅（X3d：`internal/breaker` + `circuit_orders` 主键） |
-| 监控端点鉴权闸未装配 | 跨账户敞口 / 告警被匿名读取 | `503 auth_unavailable`，**拒绝而非放行**；无凭证 401、越权 403 | ✅（`httpapi.requireAuth`；`TestMonitor_NoAuthorizerFailsClosed`） |
+| 鉴权闸未装配 / 角色不足 | 规则与审计被匿名读写 | 所有端点统一 fail-closed：未装配 `Authorizer` → 503，无凭证 → 401，越权 → 403 | ✅（`httpapi.requireAuth`；`TestAuth_ThreeStatesAndActor` / `TestRouteTableEqualsPolicyTable`） |
 | 监控读不到事件（读取端口未装配 / 库错误） | 把「读不到」显示成「没有敞口 / 没有告警」 | `503 dependency_unavailable` 或 500；绝不返回空报告冒充成功 | ✅（`event.ErrMonitorUnavailable`；`TestMonitor_RequiresReader`） |
 | 敞口字段缺口 / 窗口过大 | 低报风险 | 缺字段计入 `unpriced_events` / `unsigned_events`（不补零）；窗口 > 5000 条事件 → 400，不截断 | ✅（`TestExposure_AggregatesFromRiskEvents` / `TestExposure_RefusesTruncatedAggregate`） |
 | 告警事件投影非法 | 非法告警被静默吞掉 | 计入 `invalid_events`，不进入列表；严重度词表外同样计非法 | ✅（`TestAlerts_ProjectsAndSortsFromRiskEvents`） |
@@ -121,7 +128,8 @@ core 侧消费接线、熔断执行方、告警生产侧接线（core `alertLoop
 11. 熔断指令按 `breaker_id` 幂等：同键同载荷重放 = `already_applied`（ts 不参与载荷身份）；同键不同载荷 = 409，不重复执行。✅ `TestApply_IdempotencyKey` / `TestAPI_BreakerIdempotency`
 12. 敞口 / 告警 / 评估**只来自 `risk.risk_events`**：响应 `source` 固定，测试用真实 `POST /events` 回传后读取。✅ `TestMonitor_ExposureFromEvents` / `TestMonitor_AlertsAndEvaluate`
 13. `evaluate` 不运行检测器、不写库：`detection:"outside_process"`，调用前后事件行数不变。✅ `TestEvaluate_ReportsWithoutWritingOrDetecting` / `TestMonitor_AlertsAndEvaluate`
-14. 监控端点未装配鉴权闸时拒绝服务（503），且不把读不到 / 解析失败当成空集。✅ `TestMonitor_NoAuthorizerFailsClosed` / `TestMonitor_AuthorizerOutcomes` / `TestMonitor_RequiresReader`
+14. 所有端点未装配鉴权闸时拒绝服务（503），角色不足 403；审计 actor 非空。✅ `TestMonitor_NoAuthorizerFailsClosed` / `TestAuth_ThreeStatesAndActor` / `TestRouteTableEqualsPolicyTable`
+15. 路由表 ≡ 策略表（每个注册路由都有且仅有一个策略条目）。✅ `TestRouteTableEqualsPolicyTable`
 
 ## 5. 与契约文档的关系
 

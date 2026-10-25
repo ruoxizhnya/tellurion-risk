@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-24
-verified-by: QT-42 监控 3 端点（internal/event 聚合读 · internal/httpapi 鉴权闸 · ADR-0004）
+last-verified: 2026-10-25
+verified-by: 裁-15 鉴权接线（kit net/http 适配 · 全端点策略表 · 审计读 · ADR-0005）
 ---
 
 # 架构 — tellurion-risk
@@ -48,15 +48,17 @@ internal/
   event/             X3c 事件：wire Event / 逐条校验 / 去重键 + Memory 实现 / Service.Ingest；
                      监控聚合：Reader 端口 + Memory/PG 读取 + exposure / alerts / evaluate 投影（ADR-0004）
   breaker/           X3d 熔断：wire Command / 冻结动作枚举 / 幂等键 + Memory 实现 / Service.Apply
-  httpapi/           传输层：标准库 http.ServeMux 的 4 个规则端点 + 3 个快照端点 + 1 个事件端点 +
-                     1 个熔断端点 + 3 个监控端点（monitor/* 过 Authorizer 闸）+ 严格解码 + wire code 映射
+  httpapi/           传输层：标准库 http.ServeMux 的 4 个规则端点 + 3 个快照端点 + 1 个审计读端点 +
+                     1 个事件端点 + 1 个熔断端点 + 3 个监控端点（**全部**过 Authorizer 闸）+
+                     严格解码 + wire code 映射；auth.go 是 kit net/http 适配，policy.go 是路由 → 角色表
 doc.go               仓级包文档（无代码）
 ```
 
 **依赖方向单一**：`cmd/riskservice` → `internal/httpapi` / `internal/pgstore` → `internal/rule` / `internal/event` / `internal/breaker`；
 `internal/rule` 不 import 传输层，也不 import `database/sql`（事务边界由 Store 端口表达，见 ADR-0003）。
-**未落**：`Authorizer` 实现（QT-50 ④，monitor/* 因此线上恒 503）、外部推送通道、
-core `alertLoop` 把告警投 `POST /events`、core 侧 RiskPolicy 消费接线（F3）。清单见 `docs/TASKS.md` QT-42 施工记录。
+`internal/httpapi/auth.go` → `tellurion-kit/auth/httpadapter`（机制），policy 表留在本包（策略，ADR-0005）。
+**未落**：外部推送通道、core `alertLoop` 把告警投 `POST /events`、core 侧 RiskPolicy 消费接线（F3）。
+清单见 `docs/TASKS.md` QT-42 施工记录。
 
 ## 4. 三份契约（功能的边界就在这三份文件里）
 
@@ -145,8 +147,12 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 
 ### 9.4 C 组 · 服务对外 HTTP 面（升格后）
 
-> **鉴权**：按 core `QT-50 ④`（JWT + RBAC）统一，本仓**不另定**鉴权契约。目标：写侧（`POST/PUT /rules`、`approve`、`POST /breakers`）需 operator 及以上；读侧（`resolve`、`snapshots`）需 service 角色。**默认 fail-closed**：无 token / 过期 / 角色不足即拒绝（`401 unauthenticated` / `403 forbidden`）；loopback-only insecure 仅限显式本地开发配置（同 QT-50 ④）。
-> **wire 契约落点**：core `docs/openapi.yaml`（QT-50 ③-③）。今天它只有四条**进程内** risk 端点（F4），**没有**下表 12 条；下表在升格前是目标草案，**不复制进 openapi**（`repo-inventory.md` §3 与 `tellurion-ui:AGENTS.md` §3 同条禁令）。落 openapi 属 QT-50 / 升格单。
+> **鉴权（2026-10-25 已落，ADR-0005）**：按 core `QT-50 ④` / 裁-15 统一，机制用 kit `v0.1.1` 的
+> `auth/httpadapter`（`Parse` + `kind==access` + 角色 any-of + 启动闸），本仓只留 policy 表
+> （`internal/httpapi/policy.go`）。**全部端点** fail-closed：闸未装配 → `503 auth_unavailable`，
+> 无 token / 过期 / refresh 当 access → `401 unauthenticated`，角色不足 → `403 forbidden`。
+> 读 viewer、写 trader、规则发布 / 审批 admin；无 secret + 回环 = 开放，无 secret + 非回环 = **拒绝启动**。
+> **wire 契约落点**：core `docs/openapi.yaml`（QT-50 ③-③）。今天它只有四条**进程内** risk 端点（F4），**没有**下表 13 条；下表在升格前是目标草案，**不复制进 openapi**（`repo-inventory.md` §3 与 `tellurion-ui:AGENTS.md` §3 同条禁令）。落 openapi 属 QT-50 / 升格单。
 > **错误码**：与 `docs/api-schema.md` §2 双向一一对应，本表不新增第四套词表。
 
 | 端点 | 目标签名（请求 → 响应） | 错误语义 | 幂等 / 版本策略 |
@@ -155,6 +161,7 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 | `PUT /api/risk/rules/{id}` | `{base_revision, params, description?}` → `200 {rule_id, revision, status:"draft", version_hash}` | `404 rule_not_found`；`409 revision_conflict`（`base_revision` 不是当前 head）；`409 rule_deprecated` | 非幂等（每次产生新 revision）；`base_revision` 防丢更新。改参数语义 = MAJOR / ADR |
 | `POST /api/risk/rules/{id}/approve` | `{revision}` → `200 {rule_id, revision, status:"active", version_hash}` | `404 rule_not_found`；`409 revision_not_draft` | 同 revision 重复批准 → `200` + 同一 `version_hash`（幂等）；状态机之外无第二条路 |
 | `GET /api/risk/rules?scope=&active=true` | → `200 {rules:[{rule_id, revision, status, version_hash}], count}` | `400 invalid_params` | 只读可重试；路径只增不删 |
+| `GET /api/risk/audit?rule_id=` | → `200 {audit:[{seq, rule_id, revision, action, actor, detail?, at}], count}` | `400 invalid_params`（缺 rule_id） | 只读可重试；`actor` 取自 claims，open-access 记 `open-access`，永不为空。✅ 2026-10-25 |
 | `GET /api/risk/snapshots/{hash}` | → `200 {risk_rules_hash, rules, created_at}` | `404 snapshot_not_found` | 强幂等：同一 hash 两次拉取**字节一致**；缓存按 hash、永不失效。✅ 已实装（X3b） |
 | `POST /api/risk/resolve` | `{hash}` **或** `{ruleset:"latest"}`（二选一）→ `200 {risk_rules_hash, snapshot}` | `400 invalid_params`（两者同时给 / 都不给）；`404 no_approved_rules`；`404 snapshot_not_found`（**不回退 latest**） | 只读可重试；`latest` 只解析到**当前 approved**，不越过审批。✅ 已实装（X3b） |
 | `GET /api/risk/snapshots/{hash}/bundle` | → `200`（canonical snapshot JSON） | `404 snapshot_not_found`；内容重算 hash ≠ 路径 hash ⇒ `500` + 告警（缓存串号） | 强幂等；原地改内容是**绝对禁止项**（内容变 ⇒ 必然是新 hash）。✅ 已实装（X3b；`rule.ParseBundle` 双头 derive 校验） |
@@ -187,8 +194,8 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 
 | # | 事项 | 当前状态 | 建议 / 影响 |
 |---|---|---|---|
-| R1 | `/api/risk/*` 前缀所有权（F4） | core 已有四条进程内端点；本仓目标面同前缀 | 建议：本仓只拥有 `rules` / `snapshots` / `resolve` / `events` / `breakers` / `monitor`；core 四条**永不迁入**；网关按最长前缀转发。拍板时机 = 升格 ADR |
+| R1 | `/api/risk/*` 前缀所有权（F4） | core 已有四条进程内端点；本仓目标面同前缀 | 建议：本仓只拥有 `rules` / `snapshots` / `resolve` / `events` / `breakers` / `audit` / `monitor`；core 四条**永不迁入**；网关按最长前缀转发。拍板时机 = 升格 ADR |
 | R2 | 事件写入路径：服务侧异步收集 vs 内核回调 | `docs/db-schema.md` §5 未定稿 | 影响 C 组 `POST /events` 的重试与 `207` 语义；X3c 开工前拍 |
 | R3 | compliance / alert 归属（U7） | **已裁（2026-10-24）**：检测器留 core，通道编排与报送归本仓 | 形状已冻结为只读 `risk_events` 聚合/报表（ADR-0004）；生产侧接线（core `alertLoop` → `POST /events`）与外部推送通道仍待 |
-| R4 | 鉴权角色矩阵 | QT-50 ④ 统一面未落定 | 本文只冻结「默认 fail-closed，无凭证不服务」；具体角色名与 401/403 body 随 QT-50 对齐 |
+| R4 | 鉴权角色矩阵 | **已裁（2026-10-25）**：读 viewer / 写 trader / 规则发布与审批 admin；机制在 kit `auth/httpadapter`，策略表在本仓 `internal/httpapi/policy.go`（ADR-0005） | 全端点 fail-closed；无 secret + 非回环拒绝启动 |
 | R5 | `CheckOrder` 的输入校验细表 | 零实现（F1） | 本表冻结错误语义与总判据；逐字段校验清单在实现单里用测试钉住，不在此处预写 |

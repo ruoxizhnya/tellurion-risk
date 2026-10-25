@@ -1,24 +1,29 @@
 ---
 status: active
-last-verified: 2026-10-24
-verified-by: QT-42 监控 3 端点实装——敞口/告警聚合、evaluate 报表与 fail-closed 鉴权闸
+last-verified: 2026-10-25
+verified-by: 裁-15 鉴权接线——kit net/http 适配 + 全端点策略表 + 审计读端点 + actor 取自 claims
 ---
 
 # API Schema — tellurion-risk
 
-> **实现状态（2026-10-24）**：**规则管理 4 端点 + 快照 3 端点 + 事件回传 1 端点 + 熔断 1 端点 + 监控 3 端点已落地**
+> **实现状态（2026-10-25）**：**规则管理 4 端点 + 快照 3 端点 + 审计读 1 端点 + 事件回传 1 端点 +
+> 熔断 1 端点 + 监控 3 端点已落地，且全部过鉴权闸**
 > （`POST /rules`、`PUT /rules/{id}`、`POST /rules/{id}/approve`、`GET /rules`、`POST /resolve`、
-> `GET /snapshots/{hash}`、`GET /snapshots/{hash}/bundle`、`POST /events`、`POST /breakers`、
+> `GET /snapshots/{hash}`、`GET /snapshots/{hash}/bundle`、`GET /audit`、`POST /events`、`POST /breakers`、
 > `GET /monitor/exposure`、`GET /monitor/alerts`、`POST /monitor/evaluate`）。
 > 实现在 `internal/rule`（快照内容寻址 + `ParseBundle` 进程内边界）、`internal/event`（事件校验 + 去重键 +
 > **监控聚合读**）、`internal/breaker`（熔断指令 + 幂等键），传输在 `internal/httpapi`
 > （标准库 `net/http`，不是 gin），持久化有 Memory 与 PG（`internal/pgstore`，启动时执行幂等 DDL；
 > 事务边界见 ADR-0003）。
+> **鉴权（2026-10-25，裁-15 + ADR-0005）**：机制在 kit `auth/httpadapter`（Bearer → `Parse` →
+> `kind=access` → 角色 any-of），策略表在本仓 `internal/httpapi/policy.go`；**所有端点**都过闸，
+> 未装配 `Authorizer` → **503 `auth_unavailable`**（拒绝而非放行）。读端点 viewer、写端点 trader、
+> 规则发布 / 审批 admin。无 secret + 回环 = 开放；无 secret + 非回环 = **拒绝启动**。
+> 审计 `actor` 从 claims 填（open-access 记 `open-access`），不再有空串。
 > **监控三端点的检测器不搬出 core**：它们只读 `risk.risk_events` 做聚合与报表，`evaluate` **不运行检测器**
-> （ADR-0004）；三端点强制鉴权闸，未装配 `Authorizer` 时 **503 拒绝**（见 §2）。
-> **未落地**：QT-50 ④ 的 `Authorizer` 实现（因此线上 monitor/* 恒 503）、外部推送通道、
-> core `alertLoop` 把告警投 `POST /events`、core 侧消费接线（run 的 `risk_rules_hash` 生产者仍写空串，F3）。
-> 未落项逐条登记在 `docs/TASKS.md` QT-42 施工记录。
+> （ADR-0004）。
+> **未落地**：外部推送通道、core `alertLoop` 把告警投 `POST /events`、core 侧消费接线（run 的
+> `risk_rules_hash` 生产者仍写空串，F3）。未落项逐条登记在 `docs/TASKS.md` QT-42 施工记录。
 >
 > 本文件是**目标契约 + 现状**：已实现的行以代码为准，未实现的行是欠账，不允许把欠账当现状描述。
 
@@ -37,6 +42,17 @@ verified-by: QT-42 监控 3 端点实装——敞口/告警聚合、evaluate 报
 | PUT | `/api/risk/rules/{id}` | 改规则 → 生成新 revision（draft） | ✅ |
 | POST | `/api/risk/rules/{id}/approve` | 审批激活（draft → approved → active） | ✅ |
 | GET | `/api/risk/rules?scope=&active=true` | 查询（列表项 = head revision 摘要） | ✅ |
+
+### 审计读（viewer）—— ✅ 已实现（2026-10-25）
+
+| 方法 | 路径 | 用途 | 现状 |
+|---|---|---|---|
+| GET | `/api/risk/audit?rule_id={id}` | 查某条规则的写操作审计（create / update / approve / deprecate） | ✅ |
+
+> 响应 `{"audit":[{"seq","rule_id","revision","action","actor","detail?","at"}],"count":N}`；
+> `rule_id` 必填（缺失 → `400 invalid_params`），空结果编码为 `[]`。
+> `actor` 来自鉴权 claims（`username`，缺失退 `subject`）；显式 open-access 记 `open-access`，**永不空串**。
+> 审计是**人操作留痕**，与 core 的鉴权访问审计（ADR-017）不是同一张表。
 
 ### 运行接入（读侧，内核 / 实盘）—— 快照三端点 ✅ 已实现（2026-10-23，X3b）
 
@@ -189,9 +205,9 @@ verified-by: QT-42 监控 3 端点实装——敞口/告警聚合、evaluate 报
 
 | 情况 | 返回 | 调用方行为 |
 |---|---|---|
-| 无凭证 / token 过期 | 401 `unauthenticated` — **✅ monitor/\* 已强制；其余端点仍待 QT-50 ④** | 不重试，补齐凭证 |
-| 角色不足（写侧非 operator / 读侧非 service） | 403 `forbidden` — **✅ monitor/\* 已强制；其余端点仍待 QT-50 ④** | 不重试 |
-| 监控端点未装配鉴权闸 | 503 `auth_unavailable` — ✅ monitor/*（**拒绝而非放行**） | 不重试；等待运维装配 Authorizer |
+| 无凭证 / token 过期 | 401 `unauthenticated` — **✅ 全部端点**（2026-10-25） | 不重试，补齐凭证 |
+| 角色不足（读需 viewer / 写需 trader / 审批需 admin） | 403 `forbidden` — **✅ 全部端点**（2026-10-25） | 不重试 |
+| 鉴权闸未装配 | 503 `auth_unavailable` — ✅ 全部端点（**拒绝而非放行**） | 不重试；等待运维装配 Authorizer |
 | 监控读取端口未装配 | 503 `dependency_unavailable` — ✅ | 不重试；服务端装配问题 |
 | 监控时间窗非法（`from >= to` / 超 7 天）、事件数或告警数超上限 | 400 `invalid_params` — ✅ | 缩小窗口 / 降低 limit 后重试 |
 | 规则类型不在冻结枚举 | 400 `invalid_rule_type` | 修正请求，不重试 |
@@ -216,8 +232,11 @@ verified-by: QT-42 监控 3 端点实装——敞口/告警聚合、evaluate 报
 > **`scope` 非法用 `invalid_params` 而不是新造 `invalid_scope`**：§9.4 的错误码表只冻结了 `invalid_rule_type` 与
 > `invalid_params` 两条输入错误；新造第四个码等于把词表劈成两份。
 >
-> **鉴权与 actor**：本切片**不接鉴权**（QT-50 ④ 未落），因此 `actor` **不从请求体读取**（body 里带 `actor` 会被严格解码拒收），
-> 审计里的 `actor` 为空串 = 身份未认证。鉴权落地后由中间件填，不由调用方自报。
+> **鉴权与 actor（2026-10-25）**：全部端点先过 kit `auth/httpadapter` 适配的鉴权闸；`actor` **不从请求体读取**
+> （body 里带 `actor` 会被严格解码拒收），由鉴权上下文填 `username`（缺失退 `subject`）。
+> 显式关闭鉴权（无 secret + 回环）时记常量 `open-access`；审计 actor **永不为空串**。
+> 角色矩阵：读 viewer、写 trader、规则发布 / 审批 admin（`internal/httpapi/policy.go`）。
+> 策略表与路由表由 `TestRouteTableEqualsPolicyTable` 双向对拍。
 
 **fail-closed**：拿不到规则快照 = 不许开跑，不允许"先用默认限额"；没有凭证 / 角色不足 = 不服务，**不静默降级到匿名或 loopback 放行**（loopback-only insecure 仅限显式本地开发配置）。
 监控三端点在本切片就把这条钉死：`Authorizer` 未装配时返回 `503 auth_unavailable`，**不注册任何"匿名可读"后门**；
