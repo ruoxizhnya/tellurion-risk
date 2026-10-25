@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/jackc/pgx/v5 v5.7.5
-	github.com/ruoxizhnya/tellurion-kit v0.1.1
+	github.com/ruoxizhnya/tellurion-kit v0.1.4
 )
 
 require (

@@ -430,6 +430,10 @@ verified-by: 派发块 G4 —— 服务间角色 `service` 落策略表（resolv
 >    **不**证明「生产 token 能走通」。**本仓不能自己修**：放宽 subject 校验是 kit 的机制语义
 >    （机制在 kit、策略在本仓，ADR-0005），本仓改不得也不该改 ⇒ **已报协调者**，
 >    需 core QT-71 开工前先裁决（放宽 kit 校验 vs 改裁-17 的 subject 口径）。
+>    **✅ 已闭合（2026-10-25，kit `KT-11` / `v0.1.4`）**：裁决 §五 ⑬ 拍定方向 3 —— kit 的两条守卫对
+>    `claims.Role == auth.ServiceRole` 跳过 `int64` subject 校验（用户 token 一字未改），本仓 pin 已从
+>    `v0.1.1` 升到 `v0.1.4`。**闭合的证据是 CI 不是本机**：本机无 Go 工具链，`go build/vet/test` 一条都没跑，
+>    pin 的正确性由本仓 CI 核对（`GOSUMDB` 验证 go.sum + build/vet/test）。第 7 条那条真进程腿仍**未跑**。
 > 5. **`GET /api/risk/snapshots/{hash}` 与 `/bundle` 未开 `service`**：本单口径只开 `resolve` / `events`
 >    两条（裁-17 原文）。若 core 后续要用 `service` 直接拉 `bundle`（而不是经 `resolve` 的响应），
 >    需要**新开一单**扩档位——本单**不许**顺手扩（禁区：不动 `riskPolicy` 之外的端点档位）。
