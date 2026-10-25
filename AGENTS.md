@@ -12,6 +12,7 @@
 `monitor/exposure` / `alerts` / `evaluate` 三端点（**只读 `risk_events` 聚合/报表**，检测器不搬出 core；
 **全部端点**过鉴权闸：未装配 Authorizer 时 503 拒绝而非放行）。
 审计读 `GET /api/risk/audit`；`actor` 取自鉴权 claims（open-access 记 `open-access`），不再有空串；鉴权实现见 ADR-0005。
+服务间角色 `service`（裁-17）只开 `POST /api/risk/resolve` 与 `POST /api/risk/events` 两条——core 代机器调本仓走它；`/audit` 与规则管理面**不开**（ADR-0006）。
 
 **本仓今天的实现**（`internal/rule` / `internal/event` / `internal/breaker` / `internal/pgstore` /
 `internal/httpapi` / `cmd/riskservice`）：规则 4 端点 + 快照 3 端点 + 审计 1 端点 + 事件 1 端点 + 熔断 1 端点 +

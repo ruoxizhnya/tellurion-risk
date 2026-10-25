@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-25
-verified-by: QT-42 X3c 的 core 腿（告警生产侧接线落地）+ F3 账目订正（hash 半边已落 / bundle 半边仍待）
+verified-by: 裁-17 服务间角色 `service`（`resolve` / `events` 两条，ADR-0006）；QT-42 X3c 的 core 腿（告警生产侧接线落地）+ F3 账目订正（hash 半边已落 / bundle 半边仍待）
 ---
 
 # Dataflow — tellurion-risk
@@ -44,6 +44,12 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
 后台 relay 重投），本仓那句「允许延迟、不允许丢」不再只是端点侧的承诺 —— 逐条限制见下方
 「事件回传失败」行与 `docs/TASKS.md` QT-42 施工记录。
 
+**服务间凭证（2026-10-25，裁-17 + ADR-0006）**：图里 core → 本仓的两条边
+（`POST /api/risk/resolve` 与 `POST /api/risk/events`）是**机器发起**的，鉴权上走
+`service` 角色（与 `trader` / `admin` 并列写在同一条 `Roles` 里；kit 角色 any-of 且不排序，
+两者不能互相顶替）。`GET /api/risk/audit` 与规则管理面**不接** `service`。
+本仓只**认**这个角色，不签发、不存、不分发它——签发与注入属 core QT-71 / kit KT-09。
+
 ## 2. 关键时序
 
 ### 规则变更（已实现）
@@ -65,6 +71,7 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
 
 5. 调用方 `POST /api/risk/resolve`（`{"hash": ...}` **或** `{"ruleset": "latest"}`，二选一；
    都给 / 都不给 / ruleset 非 latest → 400 `invalid_params`）
+   —— core 代机器调用这一步用 `service` 角色（ADR-0006）；真人调用方用 `trader` / `admin`。
 6. latest：服务把**当前 active revisions**收进快照，`risk_rules_hash = H(域, 排序后的 active 内容)`
    （不含 `created_at`，同一内容永远同一 hash）→ 按 hash 幂等落 `rule_snapshots`；
    没有任何生效规则 → 404 `no_approved_rules`（拒绝启动，不许用默认限额）
@@ -89,12 +96,17 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
    `auth/httpadapter` 验 `Bearer` access token（拒 refresh / 坏签名 / 过期）→ 401，角色不在策略表 → 403；
    通过后把 `Principal` 放进 context，审计 `actor` 从这里取（open-access 记 `open-access`）。
    策略表（读 viewer / 写 trader / 审批 admin）与路由表由守卫测试双向对拍。
+   **服务间档（裁-17 + ADR-0006）**：`POST /api/risk/resolve` 与 `POST /api/risk/events` 两条
+   core 代机器发起的链路额外接受 `service` 角色（与 `trader` / `admin` 并列；kit 角色 any-of
+   且不排序 ⇒ 不能互相顶替）。`GET /api/risk/audit` 与规则管理面**不接** `service`——
+   审计与审批是人负责的动作，机器凭证不代劳。
 
 ### run 后（异步）—— ✅ X3c / X3d / 监控（只读）
 
 12. 批量 `POST /api/risk/events` → 逐条校验（缺 `run_id` / `order_id` / `ts` 记 failed）→
     合法条目按 `(run_id, order_id, event_seq)` 幂等落 `risk_events`：已存在 = duplicate（200 计数），
     单条不合法 = 207 `partial_failure` + `failed[{index, code, message}]`；整批落库失败 = 500，重试整批
+    —— core 代机器回传这一步用 `service` 角色（ADR-0006）。
 13. `POST /api/risk/breakers` 可幂等下发熔断指令（`breaker_id` + 载荷身份 action/scope/reason）：
     首次 `applied`、同键同载荷 `already_applied`、同键不同载荷 409；落 `circuit_orders`。
 
@@ -124,6 +136,7 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
 | 事件回传失败 | 留痕缺失 | 批量原子落库：整批失败 500 后重试整批（去重键幂等）；单条不合法 207 只重发 failed；允许延迟，不允许丢 | ✅ 两侧都兑现（2026-10-25 二批）：端点侧 `internal/event` + `risk.risk_events` 主键去重；生产侧 core 的 sink 改成**持久 outbox**（`quant.alert_outbox`，core Migration 060）——告警先落一行，relay 每 `events_relay_interval` 取 pending 重投，触 `events_max_attempts` 转 `failed` 终态**但保留行**，不再有「队列满即丢 / 重启即丢」。**两条残留如实登记**：① `alert_id` 撞键（同秒重启能造出同 id 的两条告警）的那条不落新行，core 侧转 Warn 点名，若既有行已是 `failed` 则这条到不了本仓；② 「core 真进程 → risk 真进程 → `monitor/alerts` 读出非空」的端到端腿仍未跑过（core 侧用 `httptest` + 内存替身按 wire 逐键自证）。见 `tellurion:docs/TASKS.md` QT-42 X3c core 腿二批 |
 | 熔断指令重复 | 重复平仓 | 幂等键 `breaker_id`：同键同载荷 → 200 `already_applied`；同键不同载荷 → 409（不执行） | ✅（X3d：`internal/breaker` + `circuit_orders` 主键） |
 | 鉴权闸未装配 / 角色不足 | 规则与审计被匿名读写 | 所有端点统一 fail-closed：未装配 `Authorizer` → 503，无凭证 → 401，越权 → 403 | ✅（`httpapi.requireAuth`；`TestAuth_ThreeStatesAndActor` / `TestRouteTableEqualsPolicyTable`） |
+| core 调本仓没带 `service` 凭证 | run 前取快照失败 ⇒ 按裁-11 该 run `failed` + `risk_rules_unavailable` | 策略表对 `resolve` / `events` 并列开 `service`（与 `trader` / `admin` 同在一条 `Roles`）；`audit` 与管理面不开 | ✅（2026-10-25 裁-17 + ADR-0006；`TestPolicy_ServiceRoleScope`）。**签发与注入不在本仓**（core QT-71 / kit KT-09） |
 | 监控读不到事件（读取端口未装配 / 库错误） | 把「读不到」显示成「没有敞口 / 没有告警」 | `503 dependency_unavailable` 或 500；绝不返回空报告冒充成功 | ✅（`event.ErrMonitorUnavailable`；`TestMonitor_RequiresReader`） |
 | 敞口字段缺口 / 窗口过大 | 低报风险 | 缺字段计入 `unpriced_events` / `unsigned_events`（不补零）；窗口 > 5000 条事件 → 400，不截断 | ✅（`TestExposure_AggregatesFromRiskEvents` / `TestExposure_RefusesTruncatedAggregate`） |
 | 告警事件投影非法 | 非法告警被静默吞掉 | 计入 `invalid_events`，不进入列表；严重度词表外同样计非法 | ✅（`TestAlerts_ProjectsAndSortsFromRiskEvents`） |
@@ -146,6 +159,7 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
 13. `evaluate` 不运行检测器、不写库：`detection:"outside_process"`，调用前后事件行数不变。✅ `TestEvaluate_ReportsWithoutWritingOrDetecting` / `TestMonitor_AlertsAndEvaluate`
 14. 所有端点未装配鉴权闸时拒绝服务（503），角色不足 403；审计 actor 非空。✅ `TestMonitor_NoAuthorizerFailsClosed` / `TestAuth_ThreeStatesAndActor` / `TestRouteTableEqualsPolicyTable`
 15. 路由表 ≡ 策略表（每个注册路由都有且仅有一个策略条目）。✅ `TestRouteTableEqualsPolicyTable`
+16. `service` 角色只声明在 `POST /api/risk/resolve` 与 `POST /api/risk/events` 两条端点上，且与 `trader` / `admin` **同在一条 `Roles`** 里（any-of 且 kit 不排序 ⇒ 不能互相顶替）；`GET /api/risk/audit` 与规则管理面用 `service` 一律 403；新增档位不放松既有语义（`viewer` 调 `resolve` 仍 403）。✅ `TestPolicy_ServiceRoleScope` / `TestPolicy_ServiceRoleDeclaredExactlyTwice` / `TestPolicy_ServiceRoleCoexistsWithHumanRoles`（ADR-0006）
 
 ## 5. 与契约文档的关系
 

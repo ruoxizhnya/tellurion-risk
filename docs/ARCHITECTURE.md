@@ -90,6 +90,8 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 - [`adr/0002-规则版本-hash-与审批状态机的裁决.md`](adr/0002-规则版本-hash-与审批状态机的裁决.md)
 - [`adr/0003-pg-store-与事务边界.md`](adr/0003-pg-store-与事务边界.md)
 - [`adr/0004-监控三端点是聚合与报送而非检测.md`](adr/0004-监控三端点是聚合与报送而非检测.md)
+- [`adr/0005-鉴权接入-kit适配与本仓策略表.md`](adr/0005-鉴权接入-kit适配与本仓策略表.md)
+- [`adr/0006-service角色只开两条服务间链路.md`](adr/0006-service角色只开两条服务间链路.md)
 
 ## 7. 非目标（明确不做）
 
@@ -154,6 +156,9 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 > （`internal/httpapi/policy.go`）。**全部端点** fail-closed：闸未装配 → `503 auth_unavailable`，
 > 无 token / 过期 / refresh 当 access → `401 unauthenticated`，角色不足 → `403 forbidden`。
 > 读 viewer、写 trader、规则发布 / 审批 admin；无 secret + 回环 = 开放，无 secret + 非回环 = **拒绝启动**。
+> **服务间档 `service`（裁-17 + ADR-0006）**：`POST /api/risk/resolve` 与 `POST /api/risk/events`
+> 额外接受 `service` 角色（core 代机器发起）；`GET /api/risk/audit` 与规则管理面**不开**。
+> 角色 any-of 且 kit 不排序 ⇒ `service` 与 `trader` / `admin` **并列**写在同一条 `Roles` 里。
 > **wire 契约落点**：core `docs/openapi.yaml`（QT-50 ③-③）。今天它只有四条**进程内** risk 端点（F4），**没有**下表 13 条；下表在升格前是目标草案，**不复制进 openapi**（`repo-inventory.md` §3 与 `tellurion-ui:AGENTS.md` §3 同条禁令）。落 openapi 属 QT-50 / 升格单。
 > **错误码**：与 `docs/api-schema.md` §2 双向一一对应，本表不新增第四套词表。
 
@@ -165,9 +170,9 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 | `GET /api/risk/rules?scope=&active=true` | → `200 {rules:[{rule_id, revision, status, version_hash}], count}` | `400 invalid_params` | 只读可重试；路径只增不删 |
 | `GET /api/risk/audit?rule_id=` | → `200 {audit:[{seq, rule_id, revision, action, actor, detail?, at}], count}` | `400 invalid_params`（缺 rule_id） | 只读可重试；`actor` 取自 claims，open-access 记 `open-access`，永不为空。✅ 2026-10-25 |
 | `GET /api/risk/snapshots/{hash}` | → `200 {risk_rules_hash, rules, created_at}` | `404 snapshot_not_found` | 强幂等：同一 hash 两次拉取**字节一致**；缓存按 hash、永不失效。✅ 已实装（X3b） |
-| `POST /api/risk/resolve` | `{hash}` **或** `{ruleset:"latest"}`（二选一）→ `200 {risk_rules_hash, snapshot}` | `400 invalid_params`（两者同时给 / 都不给）；`404 no_approved_rules`；`404 snapshot_not_found`（**不回退 latest**） | 只读可重试；`latest` 只解析到**当前 approved**，不越过审批。✅ 已实装（X3b） |
+| `POST /api/risk/resolve` | `{hash}` **或** `{ruleset:"latest"}`（二选一）→ `200 {risk_rules_hash, snapshot}` | `400 invalid_params`（两者同时给 / 都不给）；`404 no_approved_rules`；`404 snapshot_not_found`（**不回退 latest**） | 只读可重试；`latest` 只解析到**当前 approved**，不越过审批。✅ 已实装（X3b）。角色档另含 `service`（服务间，ADR-0006） |
 | `GET /api/risk/snapshots/{hash}/bundle` | → `200`（canonical snapshot JSON） | `404 snapshot_not_found`；内容重算 hash ≠ 路径 hash ⇒ `500` + 告警（缓存串号） | 强幂等；原地改内容是**绝对禁止项**（内容变 ⇒ 必然是新 hash）。✅ 已实装（X3b；`rule.ParseBundle` 双头 derive 校验） |
-| `POST /api/risk/events` | `{events:[RuleEvent...]}` → `200 {accepted, duplicates}` 或 `207 {accepted, duplicates, failed:[{index, code, message}], code:"partial_failure"}` | `400 invalid_params`（整批不可解析 / 空数组）；`207 partial_failure`（逐条） | 去重键 `run_id + order_id + event_seq`；重试只重发 `failed`。加字段 = MINOR。✅ 已实装（X3c） |
+| `POST /api/risk/events` | `{events:[RuleEvent...]}` → `200 {accepted, duplicates}` 或 `207 {accepted, duplicates, failed:[{index, code, message}], code:"partial_failure"}` | `400 invalid_params`（整批不可解析 / 空数组）；`207 partial_failure`（逐条） | 去重键 `run_id + order_id + event_seq`；重试只重发 `failed`。加字段 = MINOR。✅ 已实装（X3c）。角色档另含 `service`（服务间，ADR-0006） |
 | `POST /api/risk/breakers` | `{breaker_id, action, scope, reason, ts}` → `200 {breaker_id, status:"applied"\|"already_applied"}` | `400 invalid_params`（未知 action / scope）；`409 idempotency_conflict`（同键不同载荷） | 幂等键 `breaker_id`；载荷身份 = action + scope + reason（`ts` 不参与）；同键同载荷 → `already_applied`。✅ 已实装（X3d） |
 | `GET /api/risk/monitor/exposure` | `?from=&to=&group_by=symbol\|account\|strategy&run_id=&symbol=&verdict=` → `200 {window, group_by, source, events, unpriced_events, unsigned_events, totals, groups[]}` | `400 invalid_params`（窗口非法 / 超 7 天 / >5000 事件 / group_by 非法）；`401/403`（鉴权）；`503 auth_unavailable` | 只读；只读 `risk_events`；`verdict=alert` 不参与；缺字段计 `unpriced_events`，不补零。✅ 2026-10-24（ADR-0004） |
 | `GET /api/risk/monitor/alerts` | `?from=&to=&severity=&rule=&run_id=&symbol=&limit=` → `200 {window, source, alerts[], count, truncated, invalid_events}` | `400 invalid_params`；`401/403`；`503` | 只读；`verdict=alert` 的 payload 投影；非法投影计 `invalid_events`；按 ts 倒序。✅ 2026-10-24 |
@@ -199,5 +204,5 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 | R1 | `/api/risk/*` 前缀所有权（F4） | core 已有四条进程内端点；本仓目标面同前缀 | 建议：本仓只拥有 `rules` / `snapshots` / `resolve` / `events` / `breakers` / `audit` / `monitor`；core 四条**永不迁入**；网关按最长前缀转发。拍板时机 = 升格 ADR |
 | R2 | 事件写入路径：服务侧异步收集 vs 内核回调 | `docs/db-schema.md` §5 未定稿 | 影响 C 组 `POST /events` 的重试与 `207` 语义；X3c 开工前拍 |
 | R3 | compliance / alert 归属（U7） | **已裁（2026-10-24）**：检测器留 core，通道编排与报送归本仓 | 形状已冻结为只读 `risk_events` 聚合/报表（ADR-0004）；生产侧接线（core `alertLoop` → `POST /events`）**已落（2026-10-25）**，外部推送通道、生产侧重发 / outbox（现在满则丢弃、5xx 不重发）仍待 |
-| R4 | 鉴权角色矩阵 | **已裁（2026-10-25）**：读 viewer / 写 trader / 规则发布与审批 admin；机制在 kit `auth/httpadapter`，策略表在本仓 `internal/httpapi/policy.go`（ADR-0005） | 全端点 fail-closed；无 secret + 非回环拒绝启动 |
+| R4 | 鉴权角色矩阵 | **已裁（2026-10-25）**：读 viewer / 写 trader / 规则发布与审批 admin；机制在 kit `auth/httpadapter`，策略表在本仓 `internal/httpapi/policy.go`（ADR-0005）。**补裁（裁-17）**：服务间角色 `service` 只开 `resolve` / `events` 两条，`audit` 与管理面不开（ADR-0006） | 全端点 fail-closed；无 secret + 非回环拒绝启动；`service` 与真人角色并列写在同一条 `Roles`（any-of 且 kit 不排序） |
 | R5 | `CheckOrder` 的输入校验细表 | 零实现（F1） | 本表冻结错误语义与总判据；逐字段校验清单在实现单里用测试钉住，不在此处预写 |

@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-25
-verified-by: 裁-15 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计读 + actor 取自 claims）；QT-42 X3c 的 core 腿（告警生产侧接线已落，`alerts` / `evaluate` 不再是结构性空集）
+verified-by: 裁-15 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计读 + actor 取自 claims）；裁-17 服务间角色 `service`（`resolve` / `events` 两条，ADR-0006）；QT-42 X3c 的 core 腿（告警生产侧接线已落，`alerts` / `evaluate` 不再是结构性空集）
 ---
 
 # API Schema — tellurion-risk
@@ -20,6 +20,10 @@ verified-by: 裁-15 鉴权接线（kit net/http 适配 + 全端点策略表 + �
 > 未装配 `Authorizer` → **503 `auth_unavailable`**（拒绝而非放行）。读端点 viewer、写端点 trader、
 > 规则发布 / 审批 admin。无 secret + 回环 = 开放；无 secret + 非回环 = **拒绝启动**。
 > 审计 `actor` 从 claims 填（open-access 记 `open-access`），不再有空串。
+> **服务间档 `service`（2026-10-25，裁-17 + ADR-0006）**：`service` 是**服务间**角色（core 代机器调用），
+> 与人角色正交、不是「比 admin 低一档」；只开 `POST /api/risk/resolve` 与 `POST /api/risk/events`
+> 两条端点，`GET /api/risk/audit` 与规则管理面**不开**。角色 any-of 且 kit 不做排序 ⇒ `service`
+> 与 `trader` / `admin` **并列**写在同一条 `Roles` 里。
 > **监控三端点的检测器不搬出 core**：它们只读 `risk.risk_events` 做聚合与报表，`evaluate` **不运行检测器**
 > （ADR-0004）。
 > **未落地**：外部推送通道；`POST /events` **不写审计行**（`actorOf` 今天只作用于规则 create/update/approve
@@ -71,6 +75,13 @@ verified-by: 裁-15 鉴权接线（kit net/http 适配 + 全端点策略表 + �
 | GET | `/api/risk/snapshots/{hash}/bundle` | 拉规则包（run 前 1 次；body = canonical snapshot JSON，`rule.ParseBundle` 直接吃） | ✅ |
 | POST | `/api/risk/events` | 回传裁决事件（异步批量，**非热路径**） | ✅ X3c（2026-10-24） |
 | POST | `/api/risk/breakers` | 下发熔断指令（幂等键） | ✅ X3d（2026-10-24） |
+
+> **服务间调用（2026-10-25，裁-17 + ADR-0006）**：`POST /api/risk/resolve` 与 `POST /api/risk/events`
+> 这两条是 **core 代机器发起**的链路，策略表对它们额外开 `service` 角色（与 `trader` / `admin` 并列）。
+> 其余端点（含 `GET /api/risk/audit`、`POST /api/risk/breakers`、`monitor/*`、规则管理面）**不开** `service`：
+> 审计与审批是人负责的动作，机器凭证不代劳。新增档位**不放松**既有语义——`viewer` 调 `resolve` 仍 403。
+> 守卫：`TestPolicy_ServiceRoleScope` / `TestPolicy_ServiceRoleDeclaredExactlyTwice` /
+> `TestPolicy_ServiceRoleCoexistsWithHumanRoles`（`internal/httpapi/policy_test.go`）。
 
 ### 监控（聚合层）—— ✅ 已实现（2026-10-24，只读 `risk.risk_events`）
 
@@ -218,7 +229,7 @@ verified-by: 裁-15 鉴权接线（kit net/http 适配 + 全端点策略表 + �
 | 情况 | 返回 | 调用方行为 |
 |---|---|---|
 | 无凭证 / token 过期 | 401 `unauthenticated` — **✅ 全部端点**（2026-10-25） | 不重试，补齐凭证 |
-| 角色不足（读需 viewer / 写需 trader / 审批需 admin） | 403 `forbidden` — **✅ 全部端点**（2026-10-25） | 不重试 |
+| 角色不足（读需 viewer / 写需 trader / 审批需 admin；`resolve` / `events` 另开 service） | 403 `forbidden` — **✅ 全部端点**（2026-10-25） | 不重试 |
 | 鉴权闸未装配 | 503 `auth_unavailable` — ✅ 全部端点（**拒绝而非放行**） | 不重试；等待运维装配 Authorizer |
 | 监控读取端口未装配 | 503 `dependency_unavailable` — ✅ | 不重试；服务端装配问题 |
 | 监控时间窗非法（`from >= to` / 超 7 天）、事件数或告警数超上限 | 400 `invalid_params` — ✅ | 缩小窗口 / 降低 limit 后重试 |
@@ -247,8 +258,10 @@ verified-by: 裁-15 鉴权接线（kit net/http 适配 + 全端点策略表 + �
 > **鉴权与 actor（2026-10-25）**：全部端点先过 kit `auth/httpadapter` 适配的鉴权闸；`actor` **不从请求体读取**
 > （body 里带 `actor` 会被严格解码拒收），由鉴权上下文填 `username`（缺失退 `subject`）。
 > 显式关闭鉴权（无 secret + 回环）时记常量 `open-access`；审计 actor **永不为空串**。
-> 角色矩阵：读 viewer、写 trader、规则发布 / 审批 admin（`internal/httpapi/policy.go`）。
-> 策略表与路由表由 `TestRouteTableEqualsPolicyTable` 双向对拍。
+> 角色矩阵：读 viewer、写 trader、规则发布 / 审批 admin（`internal/httpapi/policy.go`）；
+> `POST /api/risk/resolve` 与 `POST /api/risk/events` 另开 `service`（服务间角色，ADR-0006）。
+> 策略表与路由表由 `TestRouteTableEqualsPolicyTable` 双向对拍；`service` 的作用域由
+> `TestPolicy_ServiceRoleScope` / `TestPolicy_ServiceRoleDeclaredExactlyTwice` 双向对拍。
 
 **fail-closed**：拿不到规则快照 = 不许开跑，不允许"先用默认限额"；没有凭证 / 角色不足 = 不服务，**不静默降级到匿名或 loopback 放行**（loopback-only insecure 仅限显式本地开发配置）。
 监控三端点在本切片就把这条钉死：`Authorizer` 未装配时返回 `503 auth_unavailable`，**不注册任何"匿名可读"后门**；

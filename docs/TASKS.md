@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-25
-verified-by: W2 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计读 + 启动闸，ADR-0005）
+verified-by: 派发块 G4 —— 服务间角色 `service` 落策略表（resolve / events 两条，ADR-0006）；core 侧消费接线仍待（跨仓）
 ---
 
 # TASKS — tellurion-risk 未完成项
@@ -180,9 +180,13 @@ verified-by: W2 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计
 > 8. **core 调本仓的 token 分发（跨仓）**：鉴权开启后 core 侧调用 `resolve` / `events` / `breakers`
 >    必须带服务间凭证。**口径已定（裁-17 定稿，2026-10-25）**：使用 **`service` 角色**的长期 access token
 >    （**不是** `trader` —— `trader` 同时可下实盘单，凭证泄露面不可接受），`sub=service:core`、TTL 30d、
->    只经 env（`RISK_SERVICE_RESOLVE_TOKEN` / `RISK_SERVICE_EVENTS_TOKEN`）注入。**本仓腿**：`internal/httpapi/policy.go`
->    的 `POST /api/risk/resolve` 与 `POST /api/risk/events` 两条 Roles 加 `"service"`（`GET /api/risk/audit` **不加**）；
->    守卫测试断言 service token 可 resolve/events、调 `/api/execution/*` 不涉及本仓。分发与部署清单不在本仓（core QT-71）。
+>    只经 env（`RISK_SERVICE_RESOLVE_TOKEN` / `RISK_SERVICE_EVENTS_TOKEN`）注入。**本仓腿 ✅ 已落（2026-10-25，
+>    派发块 G4 / ADR-0006）**：`internal/httpapi/policy.go` 的 `POST /api/risk/resolve` 与 `POST /api/risk/events`
+>    两条 Roles 加 `"service"`（与 `trader` / `admin` **并列**，any-of 且 kit 不排序 ⇒ 不能互相顶替；
+>    `GET /api/risk/audit` **不加**，规则管理面**不加**）；守卫测试
+>    `TestPolicy_ServiceRoleScope` / `TestPolicy_ServiceRoleDeclaredExactlyTwice` /
+>    `TestPolicy_ServiceRoleCoexistsWithHumanRoles` 已落。**剩余（跨仓）**：`service` token 的**签发与分发**
+>    不在本仓（core QT-71 / kit KT-09），本仓只**认**这个角色，不签发、不存、不注入。
 >
 > **收编说明**：原列表的「`Authorizer` 实现」「审计读取无 HTTP 端点」「鉴权与 actor」三条已由本笔关闭。
 
@@ -336,6 +340,75 @@ verified-by: W2 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计
 > 3. 真实投递腿只在 core 侧用 `httptest` 自证；「core 真进程 → risk 真进程 → `monitor/alerts` 读出非空」
 >    这条端到端**仍未跑过**（需 risk 服务起来 + `events_enabled=true` + 一个 trader/admin token）。
 
+> **施工记录（2026-10-25 · 派发块 G4 · 服务间角色 `service` 落策略表）**
+>
+> 已交付（本仓，ADR-0006）：
+>
+> - `internal/httpapi/policy.go`：`POST /api/risk/resolve` 与 `POST /api/risk/events` 两条 Roles 加
+>   `"service"`。**与 `trader` / `admin` 并列写进同一条 `Roles`**——kit 的角色判定是 any-of 且
+>   **不做排序**，`service` 不是「比 admin 低一档」的位置，替换掉真人角色会让真人调用方直接 403。
+>   **`GET /api/risk/audit` 未加**（审计是人操作留痕，机器凭证不读）；规则管理面
+>   （`rules` / `approve`）、`breakers`、`monitor/*` 一律未加；`riskPolicy` 之外**零改动**。
+>   端点条数不变：route 13 ≡ policy 13。
+> - `internal/httpapi/policy_test.go`（新增）：`TestPolicy_ServiceRoleScope`（service 调 resolve 200 /
+>   events 200 / **audit 403** / 建规则 403 / approve 403 / **viewer 调 resolve 仍 403**——新增档位
+>   不放松既有语义）、`TestPolicy_ServiceRoleDeclaredExactlyTwice`（service 只声明在这两条端点上，
+>   多一处即权限面被放大）、`TestPolicy_ServiceRoleCoexistsWithHumanRoles`（service 与真人角色同在一条
+>   `Roles`）。三条用**真 kit `TokenService`** 签发 `service` 角色的 access token，不打桩。
+> - 文档同笔：`api-schema.md`（头部鉴权段 + 运行接入段 + §2 错误码表 + 角色矩阵）、`dataflow.md`
+>   （主链路服务间凭证段 + 鉴权闸步骤 0 + run 前 / run 后时序 + 失败表新增一行 + 不变量 16）、
+>   `ARCHITECTURE.md`（§6 ADR 索引补 0005/0006 + §9.4 鉴权段 + C 组两条端点 + R4 待裁行）、
+>   `AGENTS.md` §1、`README.md`、ADR-0006 + ADR 索引；ADR-0005 §3 补裁一行指向 0006。
+>
+> 验收：`gofmt -l .` 空；`go build ./...` / `go vet ./...` / `go test ./... -count=1` 全绿。
+> 破坏验证（两条，均实测真退出码）：
+> ① 从 `riskPolicy` 删掉 `POST /api/risk/events` 条目 ⇒ **四条守卫同时红**（MUT1_EXIT=1）：
+>    `TestRouteTableEqualsPolicyTable` 报 `route table has 13 entries, policy has 12`；
+>    `TestPolicy_ServiceRoleScope` 报 `service events: 403`；
+>    `TestPolicy_ServiceRoleDeclaredExactlyTwice` 报 `role "service" declared on 1 routes, want 2`；
+>    `TestPolicy_ServiceRoleCoexistsWithHumanRoles` 报 `route "POST /api/risk/events" has no policy entry`。
+> ② 只从 `resolve` 的 Roles 里删掉 `"service"` ⇒ 三条新用例全红（`service resolve: 403` /
+>    `must declare role "service"` / `must include "service"`，MUT2_EXIT=1）。
+> 两次**逐字节还原**（`sha256 65F809D2AFCB92EC69E5C2E6AD3FE05CCF7D8BDB1EAAFF2851F0B8C5738565B7`
+> 与改前逐字节一致）后复跑绿（RESTORED_EXIT=0）。
+>
+> 未落项（本仓腿做完了，**这些一条都没在本仓落**，如实登记）：
+>
+> 1. **core 侧消费接线（跨仓，主体在 core）**：`bundle` → `rule.ParseBundle` → 构建进程内 `RiskPolicy`
+>    **仍未接** —— 2026-10-25 实测 core 全仓 `grep ParseBundle` = **0 命中**（只有文档提及），
+>    进程内限额仍来自 `config/analysis-service.yaml` 的 `risk_manager.*`。**不在本仓施工，已报协调者**
+>    （core QT-71 之后）。本仓只提供 `Snapshot` / `SnapshotRule` / `Bundle` 三类型
+>    （`internal/rule/snapshot.go:24/37/121`）+ `ParseBundle`（bytes → Bundle 纯函数，双头 derive 校验，
+>    不符即 `ErrSnapshotMismatch` fail-closed）。
+> 2. **`Snapshot` / `SnapshotRule` 迁 contracts**：台账 QT-42 ④ 明写「`ParseBundle` 的 Go 类型出现
+>    第二个使用方（core）后按 ADR-0001 ① 迁 contracts」⇒ **迁 contracts 是下一张单，不是本单**。
+> 3. **`service` token 的签发与分发（跨仓）**：本仓只**认**这个角色，**不签发、不存、不注入**；
+>    签发入口属 kit KT-09（`v0.1.2`），分发与部署清单属 core QT-71。
+> 4. **⚠️ 跨仓缺口：生产 service token 的 subject 形状与 kit 的守卫冲突（本单测出来了，必须报协调者）**：
+>    裁-17 的生产口径是 `sub=service:<repo>`（kit `v0.1.2` 的 `auth.IssueServiceToken` 就是这么签的），
+>    而 kit `auth/httpadapter.Authenticate` 要求 subject 可解析为 **`int64`**
+>    （`auth/httpadapter/httpadapter.go:139` 的 `claims.UserIDInt64()`）。
+>    **实测（2026-10-25，本机跑 kit `v0.1.2` 的真代码）**：
+>    `IssueServiceToken("service:core","service",30d)` 签出的 token
+>    ⇒ `claims.Subject == "service:core"`（非数字）⇒ `Authenticate` 返回
+>    `httpadapter: unauthenticated: malformed token subject` ⇒ **401**；
+>    对照组 `IssueTokens(1,"bob","trader")` 的数字 subject ⇒ 通过。
+>    ⇒ **今天即使 core 拿到了 service token，它在本仓也会被 401 挡在门外，压根到不了角色判定。**
+>    （kit 自己的台账 `tellurion-kit:docs/TASKS.md` KT-09 结案段也把这条写成「跨仓前置（未落）」，
+>    口径是「core QT-71 / G4 在接入服务间调用前必须先裁决并放宽该校验（或改口径用数字 subject）」。）
+>    **本单只证本仓策略表**（角色档位与作用域）——`TestPolicy_ServiceRoleScope` 用的是
+>    kit `IssueTokens` 签的**数字 subject** token，所以它证明「策略表对」，
+>    **不**证明「生产 token 能走通」。**本仓不能自己修**：放宽 subject 校验是 kit 的机制语义
+>    （机制在 kit、策略在本仓，ADR-0005），本仓改不得也不该改 ⇒ **已报协调者**，
+>    需 core QT-71 开工前先裁决（放宽 kit 校验 vs 改裁-17 的 subject 口径）。
+> 5. **`GET /api/risk/snapshots/{hash}` 与 `/bundle` 未开 `service`**：本单口径只开 `resolve` / `events`
+>    两条（裁-17 原文）。若 core 后续要用 `service` 直接拉 `bundle`（而不是经 `resolve` 的响应），
+>    需要**新开一单**扩档位——本单**不许**顺手扩（禁区：不动 `riskPolicy` 之外的端点档位）。
+> 6. **`rule_deprecated` 错误码不可达**：冻结接口面无 deprecate 端点，本单**没动**这个状态。
+> 7. **真实进程端到端腿**：「core 真进程 → risk 真进程 → `service` token 调 resolve/events」这条
+>    **仍未跑过**——本单只在 `httptest` 层用真 kit `TokenService` 自证（无部署清单、无 token 分发面），
+>    且上面第 4 条的 subject 缺口**先**要解决，否则这条腿连 200 都到不了。
+
 ---
 
 > **开工前置（refactor-plan-review M5/M8，2026-10-20 登记；2026-10-22 更新执行状态）**：本表任何单开工前，必须先过 core `tellurion:docs/TASKS.md`「五、X 线」的**公共前置**两条：
@@ -351,7 +424,7 @@ verified-by: W2 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计
 
 | 阶段 | 内容 | 上游单号 | 前置 |
 |---|---|---|---|
-| X3a | 规则定义 + revision + 审批状态机（draft→approved→active→deprecated） | `QT-42` | 🔶 已实装（`internal/rule` + `internal/httpapi` 4 端点；PG Store / 迁移执行 / 事务边界已落）；鉴权已落（2026-10-25，ADR-0005） |
+| X3a | 规则定义 + revision + 审批状态机（draft→approved→active→deprecated） | `QT-42` | 🔶 已实装（`internal/rule` + `internal/httpapi` 4 端点；PG Store / 迁移执行 / 事务边界已落）；鉴权已落（2026-10-25，ADR-0005）+ 服务间角色 `service` 已落（2026-10-25，ADR-0006：`resolve` / `events` 两条） |
 | X3b | 快照内容寻址 + `resolve` / `bundle` | `QT-42` | 🔶 已实装（2026-10-23：`rule_snapshots` DDL + 三端点 + `ParseBundle` 边界；Memory/PG 双实现）；F3 订正（2026-10-25）：✅ `risk_rules_hash` 生产者已落真值（core QT-66），⬜ `bundle` → `ParseBundle` → `RiskPolicy` 半边未接 |
 | X3c | 事件回传（异步批量）+ 监控聚合（敞口 / 告警） | `QT-42` | ✅ 事件回传（2026-10-24：`risk.risk_events` + `POST /events`，200/207 + 去重键）+ 监控 3 端点（2026-10-24：只读 `risk_events` 聚合/报表，ADR-0004；鉴权闸 fail-closed）+ **生产侧已接线（2026-10-25，core 腿）**：core 告警按 `verdict:"alert"` 回传 ⇒ `alerts` / `evaluate` 不再是结构性空集（开关默认关；生产侧已改持久 outbox，2026-10-25 二批 core `tellurion:a53fe95`） |
 | X3d | 熔断指令（幂等键） | `QT-42` | 🔶 已实装（2026-10-24：`risk.circuit_orders` + `POST /breakers`，幂等键 + 409）；执行方 / ACK 未落 |

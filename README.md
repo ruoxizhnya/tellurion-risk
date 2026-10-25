@@ -36,6 +36,7 @@ go run ./cmd/riskservice -addr 127.0.0.1:8086
 
 所有端点都必须过鉴权闸；`Authorizer` 未装配时一律 `503 auth_unavailable`（fail-closed，不是匿名可读）。
 有 `JWT_SECRET` 时启用鉴权（读 viewer / 写 trader / 审批 admin）；无 secret + 回环 = 开放，无 secret + 非回环 = **拒绝启动**。
+服务间调用（core 代机器）用 `service` 角色，只开 `POST /api/risk/resolve` 与 `POST /api/risk/events` 两条（ADR-0006）。
 
 本仓**单独 checkout 就能跑通**上面三条。需要别的仓源码才过 → 边界错了，不是加 `replace` 能解决的问题。
 
