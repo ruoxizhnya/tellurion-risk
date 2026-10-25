@@ -70,7 +70,7 @@ go test ./...
 
 | 依赖 | 版本 | 说明 |
 |---|---|---|
-| `github.com/ruoxizhnya/tellurion-contracts` | 未引入（最新 `v0.3.0`，2026-10-23 发版） | `RiskPolicy` 相关 DTO 只认契约；当前规则侧零跨仓依赖，接入时 pin tag 不 pin 伪版本 |
+| `github.com/ruoxizhnya/tellurion-contracts` | 未引入（远端最新 `v0.6.0`，2026-10-24 发版；2026-10-25 实测远端 tag 确为 `v0.6.0`） | `RiskPolicy` 相关 DTO 只认契约；当前规则侧零跨仓依赖（实测本仓对 contracts 的 import = **0**），接入时 pin tag 不 pin 伪版本 |
 | `github.com/ruoxizhnya/tellurion-kit` | `v0.1.1` | 鉴权机制：`auth`（token 签发 / 解析）+ `auth/httpadapter`（net/http 适配、启动闸、Policy）。本仓只写策略表，不另造 token 校验 |
 | `github.com/jackc/pgx/v5` | `v5.7.5` | PostgreSQL 驱动。仅 `cmd/riskservice` 空白导入 `stdlib` 注册 `database/sql` 驱动；`internal/pgstore` 只用 `database/sql`，不直接依赖 pgx API（`pgconn` 仅用于唯一约束错误识别） |
 
