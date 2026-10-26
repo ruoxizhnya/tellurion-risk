@@ -17,7 +17,9 @@
 **本仓今天的实现**（`internal/rule` / `internal/event` / `internal/breaker` / `internal/pgstore` /
 `internal/httpapi` / `cmd/riskservice`）：规则 4 端点 + 快照 3 端点 + 审计 1 端点 + 事件 1 端点 + 熔断 1 端点 +
 监控 3 端点 + 审批状态机 + 内容寻址 `version_hash` / `risk_rules_hash` + 审计 +
-`ParseBundle`（进程内 RiskPolicy 输入形状）+ 事件去重落库 + 熔断幂等落库 + `risk_events` 聚合读
+`ParseBundle`（进程内 RiskPolicy 输入形状）+ 规则参数字典（`internal/rule/params.go`，14 个标量的
+字段名 / 单位 / 取值域；写侧严格、读侧只拒未知键 —— 见 `docs/db-schema.md` §7）+ 事件去重落库 +
+熔断幂等落库 + `risk_events` 聚合读
 （`event.Reader`，Memory/PG）；持久化有 `Memory` 与 PG（`internal/pgstore`，启动时执行
 `rule.Migrations()` 幂等 DDL）；Service 的读-改-写经 `Store.Tx`（PG 行锁）完成，不再用进程内互斥锁；
 鉴权走 kit `auth/httpadapter` + 本仓 policy 表（全端点 fail-closed）；
