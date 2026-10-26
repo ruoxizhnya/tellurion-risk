@@ -44,7 +44,7 @@ internal/
   rule/              领域核心：RuleType/Scope/Status 冻结枚举、Revision 校验与参数规范化、
                      参数字典（params.go：14 个标量，写侧严格 / 读侧只拒未知键，见 db-schema §7）、
                      VersionHash、快照内容寻址（Snapshot / SnapshotHash / ParseBundle）、
-                      Store 端口（含 Tx 事务语义）+ Memory 实现、Migrations()（12 条幂等 DDL）、
+                      Store 端口（含 Tx 事务语义）+ Memory 实现、Migrations()（**11 条**幂等 DDL：1 schema + 7 表 + 3 索引，实测 `internal/rule/ddl.go`）、
                       Service（Create / Update / Approve / List / Audit / Resolve / GetSnapshot）
   pgstore/           PG 实现：rule.Store / event.Store / event.Reader / breaker.Store（Tx = 数据库事务 + FOR UPDATE 行锁）+ Migrate
   event/             X3c 事件：wire Event / 逐条校验 / 去重键 + Memory 实现 / Service.Ingest；

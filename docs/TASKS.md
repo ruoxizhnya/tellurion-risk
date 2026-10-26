@@ -77,7 +77,7 @@ verified-by: 派发块 E 组 —— SVC-RISK-G0 完成（Dockerfile + deploy/com
 - **③ 要求**：先落 QT-74 参数词典；core 在 run 前按 hash 拉 `bundle` 并构造 `RiskPolicy`；不可用时 fail-closed；历史 run 新旧裁决对拍；切换默认后删本地规则配置与旧解析；事件回传开关打开并验收。
 - **④ 约束与非目标**：不把同步裁决搬到 HTTP；不改 `Canonical` 编码（历史 hash 不许废）；不做资金/下单。
 - **⑤ 验收**：core `grep` 本地风险规则源 = 0；同批 run 新旧裁决一致（对拍报告归档）；`bundle` 不可用 → 拒绝运行；事件回传有真实行。
-- **⑥ 边界**：本仓只保证 `bundle` 可解析、可审计；core 裁决代码删除由 `SVC-CORE-RISK-RETIRE` 跟踪。
+- **⑥ 边界**：本仓只保证 `bundle` 可解析、可审计；core 裁决代码删除归 **`SVC-CORE-RISK-RETIRE`** 跟踪——⚠️ 该 ID 今天**只有名字没有六字段单**：它在 core 台账 `docs/TASKS.md:24` 的「退役单 ID」表里列名，机械判据正文在 `tellurion:docs/design/qt-decoupling/core-governance-decision-materials-2026-10-26.md` §4.4（2026-10-26 实测 §4.1~§4.7 七条齐全），core 台账 `:26` 明写「七个退役 ID 不再各自立单」。**按 §4.4 的判据开工，不要以为那里有一张正式单；真立单前本仓不宣称退役可执行。**
 
 ### QT-42 · X3 风控服务（规则真相源 + 进程内 RiskPolicy）[P2] 🔶
 
@@ -161,9 +161,9 @@ verified-by: 派发块 E 组 —— SVC-RISK-G0 完成（Dockerfile + deploy/com
 >   `Snapshot` / `SnapshotRule` 按 ADR-0001 ① 迁 contracts。
 >   **2026-10-25 H3 前提核对（三条实测阻塞；本条仍不得整条划掉）**：派发到 core 的 H3 把「bundle → `ParseBundle`
 >   → 构建 `RiskPolicy`」当成可直接开工的单，按源码核对**前提不成立**：
->   ① **规则参数词典不存在（根本阻塞）**：`SnapshotRule.Params` 在本仓是 opaque JSONB，四类规则的字段名 / 单位
->     **没有任何成文口径**——本仓自证夹具的形状就是 `{"pct":2.5}` / `{"max_pct":10}`
->     （`internal/rule/snapshot_test.go:143-144`），core 侧的限额面是 14 个标量
+>   ① **规则参数词典不存在（根本阻塞）** ⚠️ **【该前提已于 2026-10-26 失效，见下方「✅ 已解除」；本段的取证行也已过期，按历史读】**：`SnapshotRule.Params` 在本仓是 opaque JSONB，四类规则的字段名 / 单位
+>     **没有任何成文口径**——本仓自证夹具的形状~~就是 `{"pct":2.5}` / `{"max_pct":10}`
+>     （`internal/rule/snapshot_test.go:143-144`）~~（**2026-10-26 复测：那两行今天已是 `stopLossParams` / `sizingParams` 两个常量，`git grep -n '"max_pct"' -- internal/rule` = 0 命中**），core 侧的限额面是 14 个标量
 >     （`tellurion:pkg/risk/manager.go:13-28`，来自 `tellurion:pkg/bootstrap/engine.go:38-51` 的 `risk_manager.*`），
 >     两边对不上表 ⇒ core 只能猜字段名与单位（`max_pct = 10` 是 10% 还是 10 倍？），而 H3 自己的禁区写着
 >     「不许在 core 侧自造一套 risk 规则解释」。**源头不冻结，这条链无法开工。**
@@ -356,7 +356,7 @@ verified-by: 派发块 E 组 —— SVC-RISK-G0 完成（Dockerfile + deploy/com
 >   `Service.Exposure` / `Alerts` / `Evaluate` 纯聚合与投影。时间窗默认 24h、上限 7d；
 >   敞口 >5000 事件拒绝（不截断）；告警非法投影计 `invalid_events`；`evaluate` 不运行检测器、不写库，
 >   响应 `detection:"outside_process"`；汇总触到 limit 即 400（不建立在截断数据上）。
-> - `risk.risk_events`：新增 `risk_events_ts_idx (event_ts DESC)`（`internal/rule/ddl.go` 第 12 条）。
+> - `risk.risk_events`：新增 `risk_events_ts_idx (event_ts DESC)`（`internal/rule/ddl.go` **第 10 条**；2026-10-26 实测按数组顺序数：1 schema → 2 `rule_defs` → 3 `rule_revisions` → 4 `audit_logs` → 5 `rule_revisions_status_idx` → 6 `audit_logs_rule_idx` → 7 `rule_snapshots` → 8 `limits` → 9 `risk_events` → **10 `risk_events_ts_idx`** → 11 `circuit_orders`，全数组共 **11 条**。原文写「第 12 条」与 `ARCHITECTURE.md:47` 的「12 条」均为旧账，同批订正）。
 > - `internal/pgstore`：`QueryEvents`（event_ts 窗口 + run/order/symbol/verdict 过滤 + 固定排序 +
 >   limit+1 探测截断）；可选 PG 腿 `RISK_TEST_DSN`（未配置时 skip，非假绿）。
 > - `internal/httpapi`：`GET /monitor/exposure`、`GET /monitor/alerts`、`POST /monitor/evaluate`；
@@ -532,9 +532,11 @@ verified-by: 派发块 E 组 —— SVC-RISK-G0 完成（Dockerfile + deploy/com
   | `take_profit` | `atr_multiplier` | float | ATR 倍数，`>0` | 3.0 | ✅ |
   | `regime` | `fast_ma_period` / `slow_ma_period` / `vol_lookback` | int | bar 数，`>0`；且 `fast < slow` | 10 / 20 / 60 | ✅ |
 
-  **单位是这张表里唯一会让人算错钱的列**：权重一律**小数**，禁止 `pct` / 百分数形态——本仓夹具今天的
-  `{"max_pct":10}`（`internal/rule/snapshot_test.go:144`）按小数读就是 10 倍净值、按百分数读是 10%，
-  差两个数量级，故夹具要随本单改成 `{"max_position_weight":0.10}`。
+  **单位是这张表里唯一会让人算错钱的列**：权重一律**小数**，禁止 `pct` / 百分数形态——本单当时举的反例是
+  夹具里的 `{"max_pct":10}`（按小数读是 10 倍净值、按百分数读是 10%，差两个数量级）。
+  ⚠️ **该反例今天已不存在（2026-10-26 复测）**：夹具已按本单改成 `sizingParams`（`max_position_weight` 小数形态），
+  `internal/rule/snapshot_test.go:143-144` 现指向 `stopLossParams` / `sizingParams` 两个常量，
+  `git grep -n '"max_pct"' -- internal/rule` = **0 命中**（改键登记在本单施工记录）。**引用本行当证据前先跑那条 grep。**
 - **③ 要求**：① 上表进 `docs/db-schema.md`（`rule_snapshots.rules[].params` 节）+ `docs/api-schema.md`
   （规则 create/update 的输入口径），两处同名同序，**词典是唯一真相源**；
   ② **写侧严格**：`Create` / `Update` 对 `params` 按 `type` 校验键集合与取值（未知键、缺必填、类型不符、
