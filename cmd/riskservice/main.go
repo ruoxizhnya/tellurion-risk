@@ -27,7 +27,7 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", "127.0.0.1:8086", "listen address")
+	addr := flag.String("addr", "127.0.0.1:8089", "listen address")
 	dsn := flag.String("dsn", os.Getenv("RISK_DATABASE_URL"), "PostgreSQL DSN (empty = in-memory store)")
 	jwtSecret := flag.String("jwt-secret", envFirst("JWT_SECRET", "AUTH_JWT_SECRET"), "JWT secret shared with analysis (empty = open access on loopback only)")
 	exposure := flag.String("insecure-exposure", os.Getenv("AUTH_INSECURE_EXPOSURE"),

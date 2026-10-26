@@ -21,6 +21,24 @@ verified-by: 派发块 G4 —— 服务间角色 `service` 落策略表（resolv
 
 > **约定变更（2026-10-21）**：原「占位仓不写正式六字段任务单」作废——X 线任务单已展开为本仓正式任务（见下）。M5/M8 开工前置不变；实现仍未开工，开工前仍须过前置两条。
 
+### SVC-RISK-G0 · 服务就绪门 G0：自有部署与本地启动（ADR-036）[P0] 🔶
+
+- **① 目标**：本仓作为风控**控制面**服务，能独立构建、启动、被健康检查；同步裁决仍留 core 进程内。
+- **② 上下文**：ADR-036 定本仓为服务，并保留「控制面服务 + core `RiskPolicy`」混合形态；今天有 `cmd/riskservice` + `risk.*` schema + kit `v0.1.4` 鉴权，但无 `Dockerfile` / `deploy/`，默认 `:8086` 与 ai-service 撞号。
+- **③ 要求**：新增 `Dockerfile`（多阶段、非 root、`curl`）；新增 `deploy/compose.yaml`（`RISK_DATABASE_URL` / `JWT_SECRET`；端口 `:8089`）；**默认监听改 `127.0.0.1:8089`**（代码 + 文档 + ARCHITECTURE）；补 `config/` 或 env 说明；README 写单仓启动命令；健康检查用 TCP 探针（本仓暂无公开 `/healthz`，归 G1）。
+- **④ 约束与非目标**：不改规则裁决逻辑；不接管 core 四条 `/api/risk/*` 进程内端点；不接 core `bundle→RiskPolicy`（G3）；不引入 K8s。
+- **⑤ 验收**：`docker compose -f deploy/compose.yaml config` 通过；单仓启动后 TCP `8089` 可连；`:8086` 不再被本仓占用；无 `replace` / `go.work`。
+- **⑥ 边界**：只改本仓 deployment 与默认端口；core 侧消费由 `SVC-RISK-G3` 跟踪。
+
+### SVC-RISK-G3 · 规则源切换与 core 本地规则退役（ADR-036）[P0] ⬜
+
+- **① 目标**：core 的 `RiskPolicy` 真正消费本仓 `bundle`；本地 `risk_manager.*` 规则源退役，只保留同步裁决代码。
+- **② 上下文**：`risk_rules_hash` 已生产，但 `bundle → ParseBundle → RiskPolicy` 零调用点；事件回传开关默认关；core `pkg/risk` 仍持本地规则配置。
+- **③ 要求**：先落 QT-74 参数词典；core 在 run 前按 hash 拉 `bundle` 并构造 `RiskPolicy`；不可用时 fail-closed；历史 run 新旧裁决对拍；切换默认后删本地规则配置与旧解析；事件回传开关打开并验收。
+- **④ 约束与非目标**：不把同步裁决搬到 HTTP；不改 `Canonical` 编码（历史 hash 不许废）；不做资金/下单。
+- **⑤ 验收**：core `grep` 本地风险规则源 = 0；同批 run 新旧裁决一致（对拍报告归档）；`bundle` 不可用 → 拒绝运行；事件回传有真实行。
+- **⑥ 边界**：本仓只保证 `bundle` 可解析、可审计；core 裁决代码删除由 `SVC-CORE-RISK-RETIRE` 跟踪。
+
 ### QT-42 · X3 风控服务（规则真相源 + 进程内 RiskPolicy）[P2] 🔶
 
 > **迁入说明（2026-10-21）**：本单自 core 仓 `tellurion:docs/TASKS.md`「五、X 线」迁入（任务台账批量重分布：X 线单展开到各服务仓为正式六字段单，「占位仓不写正式任务单」旧约定同时作废）。六字段正文逐字保留、不改写；core 侧同号条目已改为指针。
@@ -47,7 +65,7 @@ verified-by: 派发块 G4 —— 服务间角色 `service` 落策略表（resolv
 >   `Service`（create 幂等 / update 基准守卫 / approve 一次走完 draft→approved→active 并让旧 active 转 deprecated / 全写审计）。
 > - `internal/httpapi`：4 端点（`POST /rules`、`PUT /rules/{id}`、`POST /rules/{id}/approve`、`GET /rules?scope=&active=`），
 >   严格解码（`DisallowUnknownFields` + `MaxBytesReader` + 拒多对象）、13 错误码中可达的 8 个、201/200 重放语义。
-> - `cmd/riskservice`：`127.0.0.1:8086` 起服务（`Memory` Store）。
+> - `cmd/riskservice`：`127.0.0.1:8089` 起服务（`Memory` Store；ADR-036 起默认端口从 8086 改为 8089，避开 ai-service）。
 > - 测试：`internal/rule`（hash 内容寻址 / fail-closed / 状态机 / 审计顺序 / 深拷贝 / DDL 形状）、
 >   `internal/httpapi`（生命周期 / wire code 16 case / 空列表非 null / 405）。
 > - 裁决落 `docs/adr/0002-规则版本-hash-与审批状态机的裁决.md`；`docs/db-schema.md` §5、`docs/api-schema.md` 实现状态段、
@@ -505,7 +523,7 @@ verified-by: 派发块 G4 —— 服务间角色 `service` 落策略表（resolv
 ---
 
 > **开工前置（refactor-plan-review M5/M8，2026-10-20 登记；2026-10-22 更新执行状态）**：本表任何单开工前，必须先过 core `tellurion:docs/TASKS.md`「五、X 线」的**公共前置**两条：
-> ① **M5 已结案（2026-10-21）** → `tellurion:docs/design/qt-decoupling/repo-inventory.md` §1.2：**六仓 ≠ 六进程**，本仓今天只到「仓内实现 + core 侧 port」，不升格容器；U7（compliance / alert 归属）**已裁（2026-10-24，见文首：检测器留 core，通道编排与报送归本仓）**。
+> ① ~~**M5 已结案（2026-10-21）** → `tellurion:docs/design/qt-decoupling/repo-inventory.md` §1.2：**六仓 ≠ 六进程**，本仓今天只到「仓内实现 + core 侧 port」，不升格容器~~ → **已被 ADR-036（2026-10-26）取代**：本仓定位为服务（控制面），G0 补 `Dockerfile + deploy`；同步裁决仍留 core 进程内。U7（compliance / alert 归属）**已裁（2026-10-24，见文首：检测器留 core，通道编排与报送归本仓）**。
 > ② **M8 接口对表已落（2026-10-22）** → 本仓 [`ARCHITECTURE.md`](ARCHITECTURE.md) §9（模板 = `tellurion:docs/design/qt-decoupling/data-service-contract-and-ownership.md` §4.1；**本行原指的 `target-module-topology.md` UnifiedDataPoint 节是幻影引用，已订正**）。
 > 正文以 core 彼处为准，此处只留指针、不镜像。
 
