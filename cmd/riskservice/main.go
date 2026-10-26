@@ -26,8 +26,14 @@ import (
 	"tellurion-risk/internal/rule"
 )
 
+// defaultAddr 是默认监听地址：回环 + 8089（ADR-036 G0）。
+//
+// 8089 而不是 8086：8086 是 ai-service 的口径，同机联调会撞号。回环是默认值，
+// 非回环绑定必须显式给 -addr 并过启动闸（无 secret + 非回环 = 拒绝启动）。
+const defaultAddr = "127.0.0.1:8089"
+
 func main() {
-	addr := flag.String("addr", "127.0.0.1:8089", "listen address")
+	addr := flag.String("addr", defaultAddr, "listen address")
 	dsn := flag.String("dsn", os.Getenv("RISK_DATABASE_URL"), "PostgreSQL DSN (empty = in-memory store)")
 	jwtSecret := flag.String("jwt-secret", envFirst("JWT_SECRET", "AUTH_JWT_SECRET"), "JWT secret shared with analysis (empty = open access on loopback only)")
 	exposure := flag.String("insecure-exposure", os.Getenv("AUTH_INSECURE_EXPOSURE"),

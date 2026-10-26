@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-25
-verified-by: 派发块 G4 —— 服务间角色 `service` 落策略表（resolve / events 两条，ADR-0006）；core 侧消费接线仍待（跨仓）
+last-verified: 2026-10-26
+verified-by: 派发块 E 组 —— SVC-RISK-G0 落账（Dockerfile + deploy/compose + 默认 8089 与 TCP 探针）；QT-74 词典进行中
 ---
 
 # TASKS — tellurion-risk 未完成项
@@ -21,7 +21,7 @@ verified-by: 派发块 G4 —— 服务间角色 `service` 落策略表（resolv
 
 > **约定变更（2026-10-21）**：原「占位仓不写正式六字段任务单」作废——X 线任务单已展开为本仓正式任务（见下）。M5/M8 开工前置不变；实现仍未开工，开工前仍须过前置两条。
 
-### SVC-RISK-G0 · 服务就绪门 G0：自有部署与本地启动（ADR-036）[P0] 🔶
+### SVC-RISK-G0 · 服务就绪门 G0：自有部署与本地启动（ADR-036）[P0] ✅ 完成（2026-10-26）
 
 - **① 目标**：本仓作为风控**控制面**服务，能独立构建、启动、被健康检查；同步裁决仍留 core 进程内。
 - **② 上下文**：ADR-036 定本仓为服务，并保留「控制面服务 + core `RiskPolicy`」混合形态；今天有 `cmd/riskservice` + `risk.*` schema + kit `v0.1.4` 鉴权，但无 `Dockerfile` / `deploy/`，默认 `:8086` 与 ai-service 撞号。
@@ -29,6 +29,44 @@ verified-by: 派发块 G4 —— 服务间角色 `service` 落策略表（resolv
 - **④ 约束与非目标**：不改规则裁决逻辑；不接管 core 四条 `/api/risk/*` 进程内端点；不接 core `bundle→RiskPolicy`（G3）；不引入 K8s。
 - **⑤ 验收**：`docker compose -f deploy/compose.yaml config` 通过；单仓启动后 TCP `8089` 可连；`:8086` 不再被本仓占用；无 `replace` / `go.work`。
 - **⑥ 边界**：只改本仓 deployment 与默认端口；core 侧消费由 `SVC-RISK-G3` 跟踪。
+
+> **施工记录（2026-10-26 · SVC-RISK-G0 落账）**
+>
+> 已交付（本仓）：
+>
+> - `Dockerfile`（新增）：多阶段（`golang:1.25-alpine` 构建 → `alpine:3.19` 运行）、非 root（`USER nobody`）、
+>   `EXPOSE 8089`、**TCP 健康检查** `nc -z 127.0.0.1 8089`（`netcat-openbsd` 随镜像安装）。
+>   没有造匿名 `/healthz`：公开健康端点属 G1，为本单加一个可匿名读的端点等于绕过鉴权闸。
+> - `deploy/compose.yaml`（新增）：`-addr 0.0.0.0:8089`（容器内监听）、宿主发布 `127.0.0.1:8089`
+>   （仍只在回环可达）；`RISK_DATABASE_URL` / `JWT_SECRET` 走 env 且有缺省；`host.docker.internal`
+>   映射到 `host-gateway`，便于连宿主 PG；healthcheck 与 Dockerfile 同一 TCP 探针。
+> - `cmd/riskservice/main.go`：默认监听 `127.0.0.1:8089`，抽成 `const defaultAddr` 以便被测试钉住
+>   （原先写在 `flag.String` 字面量里，改回去没有任何东西会红）。
+> - `cmd/riskservice/main_test.go`（新增）：`TestDefaultAddr` 断言默认值 = `127.0.0.1:8089`
+>   （8086 是 ai-service 的口径，撞号会直接表现为本地联调起不来）。
+> - `README.md`：默认端口订正为 8089，补 `docker build` / `docker compose -f deploy/compose.yaml up --build`
+>   两条单仓启动命令 + 三个 env 的说明表 + 「健康检查是 TCP 探针」一句。
+> - `docs/ARCHITECTURE.md` §3.1：`cmd/riskservice` 端口说明 + 「部署（G0）」段（唯一对外端口 8089、
+>   TCP 探针、配置只经 env）。
+>
+> 验收（真实输出，2026-10-26 本机 Go 1.25.14）：
+>
+> - `docker compose -f deploy/compose.yaml config -q` → 退出 **0**。
+> - `go build ./...` → 退出 **0**；`go vet ./...` → 退出 **0**；`go test ./... -count=1` →
+>   `ok tellurion-risk/internal/{breaker,event,httpapi,pgstore,rule}`，退出 **0**；`gofmt -l .` 空。
+> - **破坏验证**：把 `defaultAddr` 改回 `127.0.0.1:8086` ⇒ `TestDefaultAddr` 红
+>   （`default listen address = "127.0.0.1:8086", want 127.0.0.1:8089`）；逐字节还原后复跑绿。
+>
+> 未落项（如实登记，均不在本单）：
+>
+> 1. **Docker 镜像构建未实跑**：本机 Docker daemon 不可达（`//./pipe/dockerDesktopLinuxEngine`
+>    不存在），`docker build` 与 `compose up` 都**没有**真跑过；`config -q` 只证明 YAML 与
+>    compose schema 合法，不证明镜像能构建。归 CI / 有 Docker 的环境。
+> 2. **公开健康 / 就绪端点（`/healthz`、`/readyz`）**：本仓今天没有，探针是 TCP；G1 补。
+> 3. **`config/` 目录**：本单按 ADR-036「`Dockerfile + compose 片段 + 仓内 config`」的等价口径
+>    用 **compose + env 说明**兑现（本仓零配置文件，硬造一个 `config/` 只会多一份无人读的真相）。
+> 4. **K8s 清单**：本单明确不做（G0 边界）。core 侧 `deploy/k8s/risk-deployment.yaml` 在 core 仓，
+>    本仓不认领。
 
 ### SVC-RISK-G3 · 规则源切换与 core 本地规则退役（ADR-036）[P0] ⬜
 

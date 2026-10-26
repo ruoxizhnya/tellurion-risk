@@ -39,6 +39,7 @@ verified-by: 裁-15 鉴权接线（kit net/http 适配 · 全端点策略表 · 
 ```
 cmd/
   riskservice/       进程入口：PG（-dsn / RISK_DATABASE_URL，启动时 Migrate）或 Memory → rule.Service + httpapi
+                     默认监听 127.0.0.1:8089（ADR-036 G0；从 8086 移开，避开 ai-service）
 internal/
   rule/              领域核心：RuleType/Scope/Status 冻结枚举、Revision 校验与参数规范化、
                       VersionHash、快照内容寻址（Snapshot / SnapshotHash / ParseBundle）、
@@ -57,6 +58,12 @@ doc.go               仓级包文档（无代码）
 **依赖方向单一**：`cmd/riskservice` → `internal/httpapi` / `internal/pgstore` → `internal/rule` / `internal/event` / `internal/breaker`；
 `internal/rule` 不 import 传输层，也不 import `database/sql`（事务边界由 Store 端口表达，见 ADR-0003）。
 `internal/httpapi/auth.go` → `tellurion-kit/auth/httpadapter`（机制），policy 表留在本包（策略，ADR-0005）。
+
+**部署（G0，2026-10-26）**：仓内自带 `Dockerfile`（多阶段、非 root）+ `deploy/compose.yaml`；
+端口 **8089** 是唯一对外端口（容器内 `-addr 0.0.0.0:8089`，宿主发布 `127.0.0.1:8089`）。
+健康检查是 **TCP 探针**（`nc -z 127.0.0.1 8089`），因为本仓今天**没有公开 `/healthz`**
+（公开健康端点属 G1；不为了探针临时造一个匿名可读端点）。配置只经 env
+（`RISK_DATABASE_URL` / `JWT_SECRET` / `AUTH_INSECURE_EXPOSURE`），不入镜像、不落库。
 **未落**（2026-10-25 订正）：外部推送通道；core 侧 `bundle` → `rule.ParseBundle` → 构建 `RiskPolicy`
 （F3 的剩余半边 —— **F3 的 hash 半边已落**：QT-66 把 `risk_rules_hash` 写进 `quant.run_provenance`；
 **告警生产侧接线也已落**：core `alertLoop` → `POST /events`，开关默认关）；`POST /events` 的审计留痕。

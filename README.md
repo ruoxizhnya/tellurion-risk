@@ -8,7 +8,7 @@
 
 | 路径 | 内容 |
 |---|---|
-| `cmd/riskservice/` | HTTP 服务入口（默认 `127.0.0.1:8086`；DSN 非空用 PG，否则 Memory） |
+| `cmd/riskservice/` | HTTP 服务入口（默认 `127.0.0.1:8089`；DSN 非空用 PG，否则 Memory） |
 | `internal/rule/` | 规则领域：冻结枚举、`version_hash`、Store 端口 + `Memory`、DDL、`Service`（状态机 + 审计 + 快照） |
 | `internal/event/` | 事件回传 + 去重落库；监控聚合读取（exposure / alerts / evaluate 投影） |
 | `internal/breaker/` | 熔断指令 + 幂等键 |
@@ -26,11 +26,26 @@ go vet ./...
 go test ./...
 ```
 
-起服务：
+起服务（单仓，默认 `127.0.0.1:8089`）：
 
 ```bash
-go run ./cmd/riskservice -addr 127.0.0.1:8086
+go run ./cmd/riskservice -addr 127.0.0.1:8089
 ```
+
+容器（ADR-036 G0）：
+
+```bash
+docker build -t tellurion-risk:dev .
+docker compose -f deploy/compose.yaml up --build
+```
+
+| 环境变量 | 作用 | 缺省 |
+|---|---|---|
+| `RISK_DATABASE_URL` | PostgreSQL DSN；空 = 进程内 Memory（重启即丢，仅本地开发） | 空 |
+| `JWT_SECRET` / `AUTH_JWT_SECRET` | 鉴权 secret；空 + 回环 = 开放，空 + 非回环 = **拒绝启动** | 空 |
+| `AUTH_INSECURE_EXPOSURE` | 非回环绑定时的显式开放声明（只接受回环发布） | 空 |
+
+健康检查是 **TCP 探针**（`nc -z 127.0.0.1 8089`）：本仓今天没有公开 `/healthz`，公开健康端点归 G1。
 
 `POST /api/risk/rules` → `PUT /api/risk/rules/{id}` → `POST /api/risk/rules/{id}/approve` → `GET /api/risk/rules?scope=&active=`。
 
