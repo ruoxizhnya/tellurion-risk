@@ -59,9 +59,11 @@ verified-by: 派发块 E 组 —— SVC-RISK-G0 完成（Dockerfile + deploy/com
 >
 > 未落项（如实登记，均不在本单）：
 >
-> 1. **Docker 镜像构建未实跑**：本机 Docker daemon 不可达（`//./pipe/dockerDesktopLinuxEngine`
->    不存在），`docker build` 与 `compose up` 都**没有**真跑过；`config -q` 只证明 YAML 与
->    compose schema 合法，不证明镜像能构建。归 CI / 有 Docker 的环境。
+> 1. ~~**Docker 镜像构建未实跑**：本机 Docker daemon 不可达（`//./pipe/dockerDesktopLinuxEngine`
+>    不存在）……~~ → **已解除（2026-10-26 复测）**：Docker Engine **29.8.0** 可达；镜像已构建
+>    成功（`tellurion-risk:dev`），六服务聚合栈里 `risk` 容器 **healthy**（同批唯一不健康的是
+>    analytics 的 `/healthz`，已单独立单修复）。仍未做：core → risk 的真实调用链端到端腿
+>    （risk 侧两条出厂默认关，见 §四 F2）。
 > 2. **公开健康 / 就绪端点（`/healthz`、`/readyz`）**：本仓今天没有，探针是 TCP；G1 补。
 > 3. **`config/` 目录**：本单按 ADR-036「`Dockerfile + compose 片段 + 仓内 config`」的等价口径
 >    用 **compose + env 说明**兑现（本仓零配置文件，硬造一个 `config/` 只会多一份无人读的真相）。
