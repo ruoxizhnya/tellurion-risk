@@ -13,7 +13,7 @@ func TestMemoryTx_RollsBackAllWrites(t *testing.T) {
 	svc, store := newHarness(t)
 	ctx := context.Background()
 	mustCreate(t, svc, CreateRequest{
-		RuleID: "r", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(`{"pct":2.5}`),
+		RuleID: "r", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(stopLossParams),
 	})
 
 	boom := errors.New("boom")
@@ -103,7 +103,7 @@ func TestServiceApprove_RollsBackAllWritesOnFailure(t *testing.T) {
 	}
 	ctx := context.Background()
 	mustCreate(t, svc, CreateRequest{
-		RuleID: "r", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(`{"pct":2}`),
+		RuleID: "r", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(stopLossParams),
 	})
 
 	// 第 1 次 PutRevision（draft→approved）成功，第 2 次（→active）失败。

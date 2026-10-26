@@ -45,8 +45,8 @@ func createAndApprove(t *testing.T, h *harness, ruleID, params string) {
 
 func TestAPI_ResolveLatestAndSnapshotByteIdentity(t *testing.T) {
 	h := newHarness(t)
-	createAndApprove(t, h, "r-sl", `{"pct":2.5}`)
-	createAndApprove(t, h, "r-other", `{"pct":7.5}`)
+	createAndApprove(t, h, "r-sl", stopLossParamsA)
+	createAndApprove(t, h, "r-other", stopLossParamsB)
 
 	resp, body := h.do(t, http.MethodPost, "/api/risk/resolve", `{"ruleset":"latest"}`)
 	if resp.StatusCode != http.StatusOK {
@@ -89,7 +89,7 @@ func TestAPI_ResolveLatestAndSnapshotByteIdentity(t *testing.T) {
 	}
 
 	// draft 永不进快照：出新 draft 修订后再 resolve，快照仍指 rev1。
-	updResp, updBody := h.do(t, http.MethodPut, "/api/risk/rules/r-sl", `{"base_revision":1,"params":{"pct":5}}`)
+	updResp, updBody := h.do(t, http.MethodPut, "/api/risk/rules/r-sl", `{"base_revision":1,"params":`+stopLossParamsC+`}`)
 	if updResp.StatusCode != http.StatusOK {
 		t.Fatalf("update: status %d body %s", updResp.StatusCode, updBody)
 	}
@@ -111,7 +111,7 @@ func doWant(t *testing.T, h *harness, method, path, body string, status int, cod
 
 func TestAPI_ResolvePinnedUnknownHashNoFallback(t *testing.T) {
 	h := newHarness(t)
-	createAndApprove(t, h, "r-sl", `{"pct":2.5}`)
+	createAndApprove(t, h, "r-sl", stopLossParamsA)
 	if resp, body := h.do(t, http.MethodPost, "/api/risk/resolve", `{"ruleset":"latest"}`); resp.StatusCode != http.StatusOK {
 		t.Fatalf("setup resolve: status %d body %s", resp.StatusCode, body)
 	}

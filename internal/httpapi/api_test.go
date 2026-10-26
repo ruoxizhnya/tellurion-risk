@@ -119,7 +119,15 @@ func wantCode(t *testing.T, status int, body string, wantStatus int, wantCodeNam
 	}
 }
 
-const createBody = `{"rule_id":"r-sl","scope":"strategy","type":"stop_loss","params":{"pct":2.5},"description":"d"}`
+// 词典合法夹具（QT-74）：键名与 docs/db-schema.md §7 同字，权重一律小数。
+const (
+	stopLossParamsA = `{"atr_period":14,"base_multiplier":2.5,"bear_multiplier":3.5,"bull_multiplier":2.0,"sideways_multiplier":2.5}`
+	stopLossParamsB = `{"atr_period":14,"base_multiplier":3.0,"bear_multiplier":3.5,"bull_multiplier":2.0,"sideways_multiplier":2.5}`
+	stopLossParamsC = `{"atr_period":21,"base_multiplier":2.5,"bear_multiplier":3.5,"bull_multiplier":2.0,"sideways_multiplier":2.5}`
+	regimeParams    = `{"fast_ma_period":10,"slow_ma_period":20,"vol_lookback":60}`
+)
+
+const createBody = `{"rule_id":"r-sl","scope":"strategy","type":"stop_loss","params":` + stopLossParamsA + `,"description":"d"}`
 
 func TestAPI_RuleLifecycle(t *testing.T) {
 	h := newHarness(t)
@@ -154,7 +162,7 @@ func TestAPI_RuleLifecycle(t *testing.T) {
 	}
 
 	// 改规则 → revision 2 draft。
-	resp, body = h.do(t, http.MethodPut, "/api/risk/rules/r-sl", `{"base_revision":1,"params":{"pct":3}}`)
+	resp, body = h.do(t, http.MethodPut, "/api/risk/rules/r-sl", `{"base_revision":1,"params":`+stopLossParamsB+`}`)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("update: status %d body %s", resp.StatusCode, body)
 	}
@@ -217,7 +225,7 @@ func TestAPI_WireCodes(t *testing.T) {
 		if resp, body := h.do(t, http.MethodPost, "/api/risk/rules/r-sl/approve", `{"revision":1}`); resp.StatusCode != http.StatusOK {
 			t.Fatalf("setup approve: %d %s", resp.StatusCode, body)
 		}
-		if resp, body := h.do(t, http.MethodPut, "/api/risk/rules/r-sl", `{"base_revision":1,"params":{"pct":4}}`); resp.StatusCode != http.StatusOK {
+		if resp, body := h.do(t, http.MethodPut, "/api/risk/rules/r-sl", `{"base_revision":1,"params":`+stopLossParamsC+`}`); resp.StatusCode != http.StatusOK {
 			t.Fatalf("setup update: %d %s", resp.StatusCode, body)
 		}
 		if resp, body := h.do(t, http.MethodPost, "/api/risk/rules/r-sl/approve", `{"revision":2}`); resp.StatusCode != http.StatusOK {
@@ -248,13 +256,17 @@ func TestAPI_WireCodes(t *testing.T) {
 			`{"rule_id":"x","scope":"global","type":"regime","params":{}}{"a":1}`, 400, "invalid_params"},
 		{"empty body", http.MethodPost, "/api/risk/rules", "", 400, "invalid_params"},
 		{"same id different content", http.MethodPost, "/api/risk/rules",
-			`{"rule_id":"r-sl","scope":"strategy","type":"stop_loss","params":{"pct":9}}`, 409, "idempotency_conflict"},
+			`{"rule_id":"r-sl","scope":"strategy","type":"stop_loss","params":` + stopLossParamsB + `}`, 409, "idempotency_conflict"},
+		{"unknown param key", http.MethodPost, "/api/risk/rules",
+			`{"rule_id":"x","scope":"global","type":"stop_loss","params":{"max_pct":10}}`, 400, "invalid_params"},
+		{"param out of domain", http.MethodPost, "/api/risk/rules",
+			`{"rule_id":"x","scope":"global","type":"position_sizing","params":{"annualization_factor":16.0,"lookback_days":20,"max_position_weight":10,"min_position_weight":0.01,"target_volatility":0.15}}`, 400, "invalid_params"},
 		{"update unknown rule", http.MethodPut, "/api/risk/rules/nope",
-			`{"base_revision":1,"params":{}}`, 404, "rule_not_found"},
+			`{"base_revision":1,"params":` + stopLossParamsA + `}`, 404, "rule_not_found"},
 		{"update stale base", http.MethodPut, "/api/risk/rules/r-sl",
-			`{"base_revision":1,"params":{"pct":5}}`, 409, "revision_conflict"},
+			`{"base_revision":1,"params":` + stopLossParamsB + `}`, 409, "revision_conflict"},
 		{"update body id mismatch", http.MethodPut, "/api/risk/rules/r-sl",
-			`{"rule_id":"other","base_revision":2,"params":{"pct":5}}`, 400, "invalid_params"},
+			`{"rule_id":"other","base_revision":2,"params":` + stopLossParamsB + `}`, 400, "invalid_params"},
 		{"approve unknown rule", http.MethodPost, "/api/risk/rules/nope/approve", `{"revision":1}`, 404, "rule_not_found"},
 		{"approve unknown revision", http.MethodPost, "/api/risk/rules/r-sl/approve", `{"revision":99}`, 404, "revision_not_found"},
 		{"approve deprecated", http.MethodPost, "/api/risk/rules/r-sl/approve", `{"revision":1}`, 409, "revision_not_draft"},
@@ -282,7 +294,7 @@ func TestAPI_RejectsUnsupportedMethod(t *testing.T) {
 
 func TestAPI_ApproveAndListAcrossRules(t *testing.T) {
 	h := newHarness(t)
-	other := `{"rule_id":"r-regime","scope":"global","type":"regime","params":{"window":20}}`
+	other := `{"rule_id":"r-regime","scope":"global","type":"regime","params":` + regimeParams + `}`
 	if resp, body := h.do(t, http.MethodPost, "/api/risk/rules", other); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create other: %d %s", resp.StatusCode, body)
 	}

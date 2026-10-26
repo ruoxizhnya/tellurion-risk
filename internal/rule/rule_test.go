@@ -11,6 +11,18 @@ import (
 
 func fixedNow() time.Time { return time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC) }
 
+// 词典合法夹具（QT-74）。键名与 docs/db-schema.md §7 同字同序；
+// 权重一律小数（0.10 = 10%），禁止 pct / 百分数形态。
+const (
+	stopLossParams   = `{"atr_period":14,"base_multiplier":2.5,"bear_multiplier":3.5,"bull_multiplier":2.0,"sideways_multiplier":2.5}`
+	stopLossParamsV2 = `{"atr_period":14,"base_multiplier":3.0,"bear_multiplier":3.5,"bull_multiplier":2.0,"sideways_multiplier":2.5}`
+	regimeParams     = `{"fast_ma_period":10,"slow_ma_period":20,"vol_lookback":60}`
+	regimeParamsV2   = `{"fast_ma_period":10,"slow_ma_period":30,"vol_lookback":60}`
+	sizingParams     = `{"annualization_factor":16.0,"lookback_days":20,"max_position_weight":0.10,"min_position_weight":0.01,"target_volatility":0.15}`
+	sizingParamsV2   = `{"annualization_factor":16.0,"lookback_days":20,"max_position_weight":0.10,"min_position_weight":0.01,"target_volatility":0.20}`
+	takeProfitParams = `{"atr_multiplier":3.0}`
+)
+
 func newHarness(t *testing.T) (*Service, *Memory) {
 	t.Helper()
 	store := NewMemory()
@@ -27,7 +39,7 @@ func baseRevision(ruleID string) Revision {
 		Revision:    1,
 		Scope:       ScopeStrategy,
 		Type:        RuleTypeStopLoss,
-		Params:      json.RawMessage(`{"pct":2.5}`),
+		Params:      json.RawMessage(stopLossParams),
 		Description: "default stop loss",
 	}
 }
@@ -48,9 +60,9 @@ func mustCreate(t *testing.T, svc *Service, req CreateRequest) (Definition, Revi
 
 func TestVersionHash_IsContentAddressed(t *testing.T) {
 	a := baseRevision("r1")
-	a.Params = json.RawMessage(`{"pct":2.5,"floor":0.1}`)
+	a.Params = json.RawMessage(`{"atr_period":14,"base_multiplier":2.5}`)
 	b := baseRevision("r1")
-	b.Params = json.RawMessage(`{  "floor": 0.1, "pct": 2.5  }`)
+	b.Params = json.RawMessage(`{  "base_multiplier": 2.5, "atr_period": 14  }`)
 	b.Description = "different description"
 	b.Status = StatusActive
 	b.CreatedAt = fixedNow().Add(time.Hour)
@@ -75,7 +87,7 @@ func TestVersionHash_IsContentAddressed(t *testing.T) {
 		"revision": func(r *Revision) { r.Revision = 2 },
 		"scope":    func(r *Revision) { r.Scope = ScopeGlobal },
 		"type":     func(r *Revision) { r.Type = RuleTypeRegime },
-		"params":   func(r *Revision) { r.Params = json.RawMessage(`{"pct":3}`) },
+		"params":   func(r *Revision) { r.Params = json.RawMessage(`{"atr_period":15,"base_multiplier":2.5}`) },
 	}
 	for name, mutate := range changes {
 		t.Run(name, func(t *testing.T) {
@@ -104,7 +116,7 @@ func TestVersionHash_FailsClosedOnInvalidInput(t *testing.T) {
 		{"scope unknown", func(r *Revision) { r.Scope = "planet" }, ErrInvalidScope},
 		{"params array", func(r *Revision) { r.Params = json.RawMessage(`[1]`) }, ErrInvalidParams},
 		{"params null", func(r *Revision) { r.Params = json.RawMessage(`null`) }, ErrInvalidParams},
-		{"params broken", func(r *Revision) { r.Params = json.RawMessage(`{"pct":`) }, ErrInvalidParams},
+		{"params broken", func(r *Revision) { r.Params = json.RawMessage(`{"atr_period":`) }, ErrInvalidParams},
 		{"params missing", func(r *Revision) { r.Params = nil }, ErrInvalidParams},
 	}
 	for _, tc := range cases {
@@ -120,7 +132,7 @@ func TestVersionHash_FailsClosedOnInvalidInput(t *testing.T) {
 
 func TestValidate_RejectsTrailingAndOversizedParams(t *testing.T) {
 	trailing := baseRevision("r1")
-	trailing.Params = json.RawMessage(`{"pct":1}{"x":2}`)
+	trailing.Params = json.RawMessage(`{"atr_period":14}{"x":2}`)
 	if err := trailing.Validate(); !errors.Is(err, ErrInvalidParams) {
 		t.Fatalf("trailing content: want ErrInvalidParams, got %v", err)
 	}
@@ -139,7 +151,7 @@ func TestCreate_IsIdempotentOnRuleID(t *testing.T) {
 	svc, _ := newHarness(t)
 	req := CreateRequest{
 		RuleID: "r-stop", Scope: ScopeStrategy, Type: RuleTypeStopLoss,
-		Params: json.RawMessage(`{"pct":2.5}`), Description: "d",
+		Params: json.RawMessage(stopLossParams), Description: "d",
 	}
 	def1, rev1 := mustCreate(t, svc, req)
 
@@ -155,7 +167,7 @@ func TestCreate_IsIdempotentOnRuleID(t *testing.T) {
 	}
 
 	diff := req
-	diff.Params = json.RawMessage(`{"pct":9}`)
+	diff.Params = json.RawMessage(stopLossParamsV2)
 	if _, _, _, err := svc.Create(context.Background(), diff); !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("different content: want ErrIdempotencyConflict, got %v", err)
 	}
@@ -190,19 +202,19 @@ func TestCreate_RejectsInvalidDefinitionBeforePersisting(t *testing.T) {
 func TestUpdate_BumpsRevisionAndGuardsBase(t *testing.T) {
 	svc, _ := newHarness(t)
 	req := CreateRequest{RuleID: "r", Scope: ScopeSymbol, Type: RuleTypeTakeProfit,
-		Params: json.RawMessage(`{"tiers":[]}`), Description: "keep me"}
+		Params: json.RawMessage(takeProfitParams), Description: "keep me"}
 	mustCreate(t, svc, req)
 
 	// base_revision 必须等于 head。
 	if _, _, err := svc.Update(context.Background(), UpdateRequest{
-		RuleID: "r", BaseRevision: 7, Params: json.RawMessage(`{"tiers":[1]}`),
+		RuleID: "r", BaseRevision: 7, Params: json.RawMessage(takeProfitParams),
 	}); !errors.Is(err, ErrRevisionConflict) {
 		t.Fatalf("stale base: want ErrRevisionConflict, got %v", err)
 	}
 
 	// 不传 description = 继承原描述。
 	def, rev, err := svc.Update(context.Background(), UpdateRequest{
-		RuleID: "r", BaseRevision: 1, Params: json.RawMessage(`{"tiers":[1]}`),
+		RuleID: "r", BaseRevision: 1, Params: json.RawMessage(`{"atr_multiplier":2.0}`),
 	})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
@@ -222,7 +234,7 @@ func TestUpdate_BumpsRevisionAndGuardsBase(t *testing.T) {
 
 	empty := ""
 	def, rev, err = svc.Update(context.Background(), UpdateRequest{
-		RuleID: "r", BaseRevision: 2, Params: json.RawMessage(`{"tiers":[2]}`), Description: &empty,
+		RuleID: "r", BaseRevision: 2, Params: json.RawMessage(`{"atr_multiplier":4.0}`), Description: &empty,
 	})
 	if err != nil {
 		t.Fatalf("Update with explicit empty description: %v", err)
@@ -250,7 +262,7 @@ func TestApprove_StateMachineAndSupersession(t *testing.T) {
 	svc, store := newHarness(t)
 	ctx := context.Background()
 	mustCreate(t, svc, CreateRequest{
-		RuleID: "r", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(`{"pct":2}`),
+		RuleID: "r", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(stopLossParams),
 	})
 
 	def, rev, err := svc.Approve(ctx, ApproveRequest{RuleID: "r", Revision: 1})
@@ -274,7 +286,7 @@ func TestApprove_StateMachineAndSupersession(t *testing.T) {
 	}
 
 	// 新 revision 激活 → 旧的 active 变 deprecated。
-	if _, _, err := svc.Update(ctx, UpdateRequest{RuleID: "r", BaseRevision: 1, Params: json.RawMessage(`{"pct":3}`)}); err != nil {
+	if _, _, err := svc.Update(ctx, UpdateRequest{RuleID: "r", BaseRevision: 1, Params: json.RawMessage(stopLossParamsV2)}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	def3, rev3, err := svc.Approve(ctx, ApproveRequest{RuleID: "r", Revision: 2})
@@ -317,8 +329,8 @@ func TestList_EmptyIsNonNilAndFiltersWork(t *testing.T) {
 		t.Fatalf("empty list must be non-nil []: %#v", empty)
 	}
 
-	mustCreate(t, svc, CreateRequest{RuleID: "b-global", Scope: ScopeGlobal, Type: RuleTypeRegime, Params: json.RawMessage(`{}`)})
-	mustCreate(t, svc, CreateRequest{RuleID: "a-strategy", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(`{}`)})
+	mustCreate(t, svc, CreateRequest{RuleID: "b-global", Scope: ScopeGlobal, Type: RuleTypeRegime, Params: json.RawMessage(regimeParams)})
+	mustCreate(t, svc, CreateRequest{RuleID: "a-strategy", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(stopLossParams)})
 	if _, _, err := svc.Approve(ctx, ApproveRequest{RuleID: "a-strategy", Revision: 1}); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
@@ -353,10 +365,10 @@ func TestAudit_EveryWriteLeavesATrace(t *testing.T) {
 	ctx := context.Background()
 	mustCreate(t, svc, CreateRequest{
 		RuleID: "r", Scope: ScopeAccount, Type: RuleTypePositionSizing,
-		Params: json.RawMessage(`{"pct":5}`), Actor: "alice",
+		Params: json.RawMessage(sizingParams), Actor: "alice",
 	})
 	if _, _, err := svc.Update(ctx, UpdateRequest{
-		RuleID: "r", BaseRevision: 1, Params: json.RawMessage(`{"pct":6}`), Actor: "bob",
+		RuleID: "r", BaseRevision: 1, Params: json.RawMessage(sizingParamsV2), Actor: "bob",
 	}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
@@ -404,7 +416,7 @@ func TestDefinitionStatus_MatchesActivePointer(t *testing.T) {
 	ctx := context.Background()
 
 	def, _, created, err := svc.Create(ctx, CreateRequest{
-		RuleID: "r", Scope: ScopeGlobal, Type: RuleTypeRegime, Params: json.RawMessage(`{"w":20}`),
+		RuleID: "r", Scope: ScopeGlobal, Type: RuleTypeRegime, Params: json.RawMessage(regimeParams),
 	})
 	if err != nil || !created {
 		t.Fatalf("Create: %v created=%v", err, created)
@@ -418,7 +430,7 @@ func TestDefinitionStatus_MatchesActivePointer(t *testing.T) {
 	}
 
 	// 产生新 draft 修订：定义仍是 active（有生效版本），但 head 是 draft。
-	def, rev, err := svc.Update(ctx, UpdateRequest{RuleID: "r", BaseRevision: 1, Params: json.RawMessage(`{"w":30}`)})
+	def, rev, err := svc.Update(ctx, UpdateRequest{RuleID: "r", BaseRevision: 1, Params: json.RawMessage(regimeParamsV2)})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
@@ -458,7 +470,7 @@ func TestMemory_ReturnsDeepCopies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRevision again: %v", err)
 	}
-	if string(again.Params) != `{"pct":2.5}` {
+	if string(again.Params) != stopLossParams {
 		t.Fatalf("store must not share Params memory, got %s", again.Params)
 	}
 
@@ -471,7 +483,7 @@ func TestMemory_ReturnsDeepCopies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRevision third: %v", err)
 	}
-	if string(third.Params) != `{"pct":2.5}` {
+	if string(third.Params) != stopLossParams {
 		t.Fatalf("ListRevisions must return copies, got %s", third.Params)
 	}
 

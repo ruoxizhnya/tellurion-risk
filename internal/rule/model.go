@@ -121,7 +121,8 @@ const (
 	ActionDeprecate = "deprecate"
 )
 
-// Validate 校验 revision 的内容。未知类型 / scope / 非对象参数一律拒绝。
+// Validate 校验 revision 的内容。未知类型 / scope / 非对象参数一律拒绝；
+// params 的键集合与取值按 RuleType 对应的参数字典逐项校验（params.go）。
 func (r Revision) Validate() error {
 	if r.RuleID == "" {
 		return fmt.Errorf("%w: rule_id is required", ErrInvalidParams)
@@ -142,7 +143,8 @@ func (r Revision) Validate() error {
 	if len(params) > MaxParamsBytes {
 		return fmt.Errorf("%w: params exceed %d bytes", ErrInvalidParams, MaxParamsBytes)
 	}
-	return nil
+	// 写侧严格：未知键 / 缺必填 / 类型不符 / NaN / Inf / 越域 / 跨字段矛盾都拒。
+	return validateParams(r.Type, params)
 }
 
 // canonicalParams 把参数规范化成「键有序、无多余空白」的 JSON 对象字节。

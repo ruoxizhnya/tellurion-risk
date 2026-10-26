@@ -138,7 +138,9 @@ func (b Bundle) ForScope(scope Scope) []SnapshotRule {
 
 // ParseBundle 把 canonical snapshot JSON 变成进程内可用的规则包：
 // 重新 derive hash 与 risk_rules_hash 比对（不符 ⇒ fail-closed 拒开跑），
-// 未知 type / scope / 非对象参数一律拒收。
+// 未知 type / scope / 非对象参数一律拒收；params 的**键名**按参数字典 fail-closed
+// 拒收（未知键 = 词典没有这个字段 ⇒ 消费方无从解释，不许猜），但**不**重校必填与
+// 取值域——历史快照按当年词典写入，用今天的取值域卡它会让历史 hash 不可读。
 func ParseBundle(data []byte) (Bundle, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -158,6 +160,9 @@ func ParseBundle(data []byte) (Bundle, error) {
 		byScope:       make(map[Scope][]SnapshotRule),
 	}
 	for _, r := range b.rules {
+		if err := rejectUnknownParamKeys(r.Type, r.Params); err != nil {
+			return Bundle{}, err
+		}
 		b.byScope[r.Scope] = append(b.byScope[r.Scope], r)
 	}
 	return b, nil

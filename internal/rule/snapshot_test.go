@@ -17,7 +17,7 @@ func snapshotRules() []SnapshotRule {
 			Revision:    1,
 			Scope:       ScopeStrategy,
 			Type:        RuleTypeStopLoss,
-			Params:      json.RawMessage(`{"pct":2.5}`),
+			Params:      json.RawMessage(stopLossParams),
 			VersionHash: strings.Repeat("a", 64),
 		},
 		{
@@ -25,7 +25,7 @@ func snapshotRules() []SnapshotRule {
 			Revision:    3,
 			Scope:       ScopeGlobal,
 			Type:        RuleTypePositionSizing,
-			Params:      json.RawMessage(`{"max_pct":10}`),
+			Params:      json.RawMessage(sizingParams),
 			VersionHash: strings.Repeat("b", 64),
 		},
 	}
@@ -53,7 +53,7 @@ func TestSnapshotHash_IsContentAddressed(t *testing.T) {
 
 	// params 书写差异不参与（canonical 化）。
 	unsorted := snapshotRules()
-	unsorted[0].Params = json.RawMessage(`{  "pct":  2.5 }`)
+	unsorted[0].Params = json.RawMessage(`{  "sideways_multiplier": 2.5, "bull_multiplier": 2.0, "bear_multiplier": 3.5, "base_multiplier": 2.5, "atr_period": 14 }`)
 	h3, err := SnapshotHash(unsorted)
 	if err != nil {
 		t.Fatalf("SnapshotHash(unsorted params): %v", err)
@@ -68,13 +68,13 @@ func TestSnapshotHash_IsContentAddressed(t *testing.T) {
 		"revision":     func(rs *[]SnapshotRule) { (*rs)[0].Revision = 2 },
 		"scope":        func(rs *[]SnapshotRule) { (*rs)[0].Scope = ScopeAccount },
 		"type":         func(rs *[]SnapshotRule) { (*rs)[0].Type = RuleTypeRegime },
-		"params":       func(rs *[]SnapshotRule) { (*rs)[0].Params = json.RawMessage(`{"pct":3}`) },
+		"params":       func(rs *[]SnapshotRule) { (*rs)[0].Params = json.RawMessage(stopLossParamsV2) },
 		"version_hash": func(rs *[]SnapshotRule) { (*rs)[0].VersionHash = strings.Repeat("c", 64) },
 		"rule removed": func(rs *[]SnapshotRule) { *rs = (*rs)[:1] },
 		"rule added": func(rs *[]SnapshotRule) {
 			*rs = append(*rs, SnapshotRule{
 				RuleID: "r-new", Revision: 1, Scope: ScopeSymbol, Type: RuleTypeTakeProfit,
-				Params: json.RawMessage(`{"x":1}`), VersionHash: strings.Repeat("d", 64),
+				Params: json.RawMessage(takeProfitParams), VersionHash: strings.Repeat("d", 64),
 			})
 		},
 	}
@@ -107,7 +107,7 @@ func TestSnapshotHash_FailsClosedOnInvalidInput(t *testing.T) {
 		{"scope unknown", func(rs *[]SnapshotRule) { (*rs)[0].Scope = "planet" }, ErrInvalidScope},
 		{"version_hash missing", func(rs *[]SnapshotRule) { (*rs)[0].VersionHash = "" }, ErrInvalidParams},
 		{"params array", func(rs *[]SnapshotRule) { (*rs)[0].Params = json.RawMessage(`[1]`) }, ErrInvalidParams},
-		{"params broken", func(rs *[]SnapshotRule) { (*rs)[0].Params = json.RawMessage(`{"pct":`) }, ErrInvalidParams},
+		{"params broken", func(rs *[]SnapshotRule) { (*rs)[0].Params = json.RawMessage(`{"atr_period":`) }, ErrInvalidParams},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -140,13 +140,13 @@ func mustResolveLatest(t *testing.T, svc *Service) Snapshot {
 
 func TestResolveLatest_OnlyActiveRevisionsEnterSnapshot(t *testing.T) {
 	svc, store := newHarness(t)
-	mustCreate(t, svc, CreateRequest{RuleID: "r-sl", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(`{"pct":2.5}`)})
-	mustCreate(t, svc, CreateRequest{RuleID: "r-global", Scope: ScopeGlobal, Type: RuleTypePositionSizing, Params: json.RawMessage(`{"max_pct":10}`)})
+	mustCreate(t, svc, CreateRequest{RuleID: "r-sl", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(stopLossParams)})
+	mustCreate(t, svc, CreateRequest{RuleID: "r-global", Scope: ScopeGlobal, Type: RuleTypePositionSizing, Params: json.RawMessage(sizingParams)})
 	mustApprove(t, svc, "r-sl", 1)
 	mustApprove(t, svc, "r-global", 1)
 
 	// r-sl 出一条 draft 修订（head=2），生效指针仍在 rev1：draft 永不进快照。
-	if _, _, err := svc.Update(context.Background(), UpdateRequest{RuleID: "r-sl", BaseRevision: 1, Params: json.RawMessage(`{"pct":5}`)}); err != nil {
+	if _, _, err := svc.Update(context.Background(), UpdateRequest{RuleID: "r-sl", BaseRevision: 1, Params: json.RawMessage(stopLossParamsV2)}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 
@@ -193,7 +193,7 @@ func TestResolveLatest_FailsClosedWithoutApprovedRules(t *testing.T) {
 	}
 
 	// 只有 draft 也一样：未审批规则不可能生效。
-	mustCreate(t, svc, CreateRequest{RuleID: "r-draft", Scope: ScopeGlobal, Type: RuleTypeStopLoss, Params: json.RawMessage(`{"pct":1}`)})
+	mustCreate(t, svc, CreateRequest{RuleID: "r-draft", Scope: ScopeGlobal, Type: RuleTypeStopLoss, Params: json.RawMessage(stopLossParams)})
 	if _, err := svc.Resolve(context.Background(), ResolveRequest{Ruleset: RulesetLatest}); !errors.Is(err, ErrNoApprovedRules) {
 		t.Fatalf("draft-only store: want ErrNoApprovedRules, got %v", err)
 	}
@@ -201,12 +201,12 @@ func TestResolveLatest_FailsClosedWithoutApprovedRules(t *testing.T) {
 
 func TestResolve_PinnedHashNeverFallsBack(t *testing.T) {
 	svc, _ := newHarness(t)
-	mustCreate(t, svc, CreateRequest{RuleID: "r-sl", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(`{"pct":2.5}`)})
+	mustCreate(t, svc, CreateRequest{RuleID: "r-sl", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(stopLossParams)})
 	mustApprove(t, svc, "r-sl", 1)
 	old := mustResolveLatest(t, svc)
 
 	// 出新 revision 并激活：latest 前进，但历史快照仍按 hash 可复现。
-	if _, _, err := svc.Update(context.Background(), UpdateRequest{RuleID: "r-sl", BaseRevision: 1, Params: json.RawMessage(`{"pct":5}`)}); err != nil {
+	if _, _, err := svc.Update(context.Background(), UpdateRequest{RuleID: "r-sl", BaseRevision: 1, Params: json.RawMessage(stopLossParamsV2)}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	mustApprove(t, svc, "r-sl", 2)
@@ -250,7 +250,7 @@ func TestResolve_RequestValidation(t *testing.T) {
 
 func TestPutSnapshot_FailsLoudOnTamperedContent(t *testing.T) {
 	svc, store := newHarness(t)
-	mustCreate(t, svc, CreateRequest{RuleID: "r-sl", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(`{"pct":2.5}`)})
+	mustCreate(t, svc, CreateRequest{RuleID: "r-sl", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(stopLossParams)})
 	mustApprove(t, svc, "r-sl", 1)
 	snap := mustResolveLatest(t, svc)
 
@@ -263,7 +263,7 @@ func TestPutSnapshot_FailsLoudOnTamperedContent(t *testing.T) {
 
 	// 同 hash 不同内容（fail-loud，不许静默覆盖）。
 	tamperedRules := snap.Clone()
-	tamperedRules.Rules[0].Params = json.RawMessage(`{"pct":99}`)
+	tamperedRules.Rules[0].Params = json.RawMessage(stopLossParamsV2)
 	if err := store.PutSnapshot(context.Background(), tamperedRules); !errors.Is(err, ErrSnapshotMismatch) {
 		t.Fatalf("same hash different content: want ErrSnapshotMismatch, got %v", err)
 	}
@@ -276,13 +276,13 @@ func TestPutSnapshot_FailsLoudOnTamperedContent(t *testing.T) {
 
 func TestGetSnapshot_VerifiesContentOnRead(t *testing.T) {
 	svc, store := newHarness(t)
-	mustCreate(t, svc, CreateRequest{RuleID: "r-sl", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(`{"pct":2.5}`)})
+	mustCreate(t, svc, CreateRequest{RuleID: "r-sl", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(stopLossParams)})
 	mustApprove(t, svc, "r-sl", 1)
 	snap := mustResolveLatest(t, svc)
 
 	// 直接改内存里的快照（同包测试才能做这一步）：读侧 derive 校验必须把它抓出来。
 	backend := store.snapshots[snap.RiskRulesHash]
-	backend.Rules[0].Params = json.RawMessage(`{"pct":42}`)
+	backend.Rules[0].Params = json.RawMessage(stopLossParamsV2)
 	store.snapshots[snap.RiskRulesHash] = backend
 
 	if _, err := store.GetSnapshot(context.Background(), snap.RiskRulesHash); !errors.Is(err, ErrSnapshotMismatch) {
@@ -294,8 +294,8 @@ func TestGetSnapshot_VerifiesContentOnRead(t *testing.T) {
 
 func TestParseBundle_RoundTripAndScopeLookup(t *testing.T) {
 	svc, _ := newHarness(t)
-	mustCreate(t, svc, CreateRequest{RuleID: "r-sl", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(`{"pct":2.5}`)})
-	mustCreate(t, svc, CreateRequest{RuleID: "r-global", Scope: ScopeGlobal, Type: RuleTypePositionSizing, Params: json.RawMessage(`{"max_pct":10}`)})
+	mustCreate(t, svc, CreateRequest{RuleID: "r-sl", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(stopLossParams)})
+	mustCreate(t, svc, CreateRequest{RuleID: "r-global", Scope: ScopeGlobal, Type: RuleTypePositionSizing, Params: json.RawMessage(sizingParams)})
 	mustApprove(t, svc, "r-sl", 1)
 	mustApprove(t, svc, "r-global", 1)
 	snap := mustResolveLatest(t, svc)
@@ -316,7 +316,7 @@ func TestParseBundle_RoundTripAndScopeLookup(t *testing.T) {
 	if len(strategy) != 1 || strategy[0].RuleID != "r-sl" || strategy[0].Type != RuleTypeStopLoss {
 		t.Fatalf("ForScope(strategy) = %+v", strategy)
 	}
-	if string(strategy[0].Params) != `{"pct":2.5}` {
+	if string(strategy[0].Params) != stopLossParams {
 		t.Fatalf("params must survive the boundary, got %s", strategy[0].Params)
 	}
 
@@ -329,7 +329,7 @@ func TestParseBundle_RoundTripAndScopeLookup(t *testing.T) {
 
 func TestParseBundle_FailsClosed(t *testing.T) {
 	svc, _ := newHarness(t)
-	mustCreate(t, svc, CreateRequest{RuleID: "r-sl", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(`{"pct":2.5}`)})
+	mustCreate(t, svc, CreateRequest{RuleID: "r-sl", Scope: ScopeStrategy, Type: RuleTypeStopLoss, Params: json.RawMessage(stopLossParams)})
 	mustApprove(t, svc, "r-sl", 1)
 	snap := mustResolveLatest(t, svc)
 	valid, err := json.Marshal(snap)
