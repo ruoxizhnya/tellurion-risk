@@ -77,7 +77,7 @@ verified-by: 派发块 E 组 —— SVC-RISK-G0 完成（Dockerfile + deploy/com
 - **③ 要求**：先落 QT-74 参数词典；core 在 run 前按 hash 拉 `bundle` 并构造 `RiskPolicy`；不可用时 fail-closed；历史 run 新旧裁决对拍；切换默认后删本地规则配置与旧解析；事件回传开关打开并验收。
 - **④ 约束与非目标**：不把同步裁决搬到 HTTP；不改 `Canonical` 编码（历史 hash 不许废）；不做资金/下单。
 - **⑤ 验收**：core `grep` 本地风险规则源 = 0；同批 run 新旧裁决一致（对拍报告归档）；`bundle` 不可用 → 拒绝运行；事件回传有真实行。
-- **⑥ 边界**：本仓只保证 `bundle` 可解析、可审计；core 裁决代码删除归 **`SVC-CORE-RISK-RETIRE`** 跟踪——⚠️ 该 ID 今天**只有名字没有六字段单**：它在 core 台账 `docs/TASKS.md:24` 的「退役单 ID」表里列名，机械判据正文在 `tellurion:docs/design/qt-decoupling/core-governance-decision-materials-2026-10-26.md` §4.4（2026-10-26 实测 §4.1~§4.7 七条齐全），core 台账 `:26` 明写「七个退役 ID 不再各自立单」。**按 §4.4 的判据开工，不要以为那里有一张正式单；真立单前本仓不宣称退役可执行。**
+- **⑥ 边界**：本仓只保证 `bundle` 可解析、可审计；core 裁决代码删除归 **`SVC-CORE-RISK-RETIRE`** 跟踪——条目**已在 core 立单**（2026-10-26 同日补，`tellurion:docs/TASKS.md:139`「六之二、退役执行单」，串行第 7；判据逐字抄 B 组材料 §4.4）。⚠️ 本行此前写「由该 ID 跟踪」时它只有名字没有条目，那一版账已被 core 的 §六之二 推翻；开工时按彼处六字段与**当场重跑的基线数**走（基线会漂移，不许照抄文档里的数）。
 
 ### QT-42 · X3 风控服务（规则真相源 + 进程内 RiskPolicy）[P2] 🔶
 
@@ -630,6 +630,42 @@ verified-by: 派发块 E 组 —— SVC-RISK-G0 完成（Dockerfile + deploy/com
 > ① ~~**M5 已结案（2026-10-21）** → `tellurion:docs/design/qt-decoupling/repo-inventory.md` §1.2：**六仓 ≠ 六进程**，本仓今天只到「仓内实现 + core 侧 port」，不升格容器~~ → **已被 ADR-036（2026-10-26）取代**：本仓定位为服务（控制面），G0 补 `Dockerfile + deploy`；同步裁决仍留 core 进程内。U7（compliance / alert 归属）**已裁（2026-10-24，见文首：检测器留 core，通道编排与报送归本仓）**。
 > ② **M8 接口对表已落（2026-10-22）** → 本仓 [`ARCHITECTURE.md`](ARCHITECTURE.md) §9（模板 = `tellurion:docs/design/qt-decoupling/data-service-contract-and-ownership.md` §4.1；**本行原指的 `target-module-topology.md` UnifiedDataPoint 节是幻影引用，已订正**）。
 > 正文以 core 彼处为准，此处只留指针、不镜像。
+
+### SVC-RISK-G1 · 服务就绪门 G1：公开健康/就绪端点 · 错误模型闭合 · 版本化（ADR-036）[P0] ⬜
+
+- **① 目标**：本仓 13 条端点补齐 ADR-036 §3 的 G1 五件，并关掉台账里那条**已写明却无人执行的承诺**。
+- **② 上下文**：台账 `:67` 原文「**公开健康 / 就绪端点（`/healthz`、`/readyz`）：本仓今天没有，探针是 TCP；G1 补**」——而此前**不存在 G1 单**（实测本文件此前只有 `SVC-RISK-G0` 与 `SVC-RISK-G3`）；实测 `internal/httpapi` 与 `cmd/riskservice` 里 `healthz` / `health` **0 命中**，`deploy/compose.yaml:20-23` 的健康检查是 `nc -z 127.0.0.1 8089`（TCP，只能证明端口在听，证明不了规则库可用）。已落的一半：鉴权完整（`policy.go` 策略表 + kit `auth/httpadapter`，全端点 fail-closed；`service` 角色只开 `POST /api/risk/resolve` 与 `POST /api/risk/events` 两条，ADR-0006）；分页在 `rules` 与 `audit` 两条读面上部分已有。**未落**：版本化兼容策略、错误码闭合表、限流、幂等键口径（`breakers` 有幂等键、`events` 有去重键，但两者的「重复请求返回什么」未成文）。
+- **③ 要求**：① 公开 `/healthz`（无鉴权，进程活）+ `/readyz`（PG 可连 + `rule.Migrations()` 已执行，未就绪 503）；`deploy/compose.yaml` 的健康检查从 TCP 换成 `/healthz`，就绪探针用 `/readyz`；② 错误码闭合表：`internal/rule` 与 `internal/event` / `internal/breaker` 的每个哨兵 → HTTP 码 + 报文形状逐条列进 `api-schema.md`，未列出即视为缺陷；③ 幂等语义成文：`POST /breakers` 的幂等键重复返回 200 还是 409、`POST /events` 的去重键重复是否计入 `duplicates` 并返回什么码，各写死并各有用例；④ 分页：`rules` / `audit` / `monitor/*` 四条读面统一 `limit`+`cursor`（或显式声明整段返回 + 上界）；⑤ 版本化：`api-schema.md` 给兼容性策略行（加字段 MINOR / 改语义 MAJOR）；⑥ 限流按单人自托管取「不打挂自己」量级，且 **429 与 401/403 可区分**（core 侧 AUD-57 的同型坑：探针被限流读成未登录）。
+- **④ 约束与非目标**：不扩 `service` 角色的档位（`/audit` 与规则管理面**不开**，ADR-0006 已裁）；不改裁决语义（`CheckOrder` 永不在本仓，ADR-036 §6 第 2 条）；不做多租户/RBAC；不引新依赖（kit 已 `v0.1.4`）。
+- **⑤ 验收**：① `/healthz` 200 无需 token、`/readyz` 在 PG 断开时 503、恢复后 200（三条用例）；② `compose` 的 healthcheck 已换成 HTTP 探针且 `docker compose up --wait` 到 healthy；③ 错误码表逐条对得上实现（抽 3 条）；④ 幂等两条用例：同键重复 `breakers` ⇒ 预期码、同去重键重复 `events` ⇒ 预期 `duplicates`；⑤ 429 与 401 用例可区分且探针豁免；⑥ 三条命令单仓绿。
+- **⑥ 边界**：本仓接口面；core 侧的 `bundle → RiskPolicy` 接线归 `tellurion:SVC-CORE-RISK-RETIRE`，`events_enabled` 出厂值与凭证分发归 `tellurion:QT-77`。
+
+### SVC-RISK-G2 · 服务就绪门 G2：`risk.*` 唯一 writer 与可重放迁移（ADR-036）[P0] ⬜
+
+- **① 目标**：`risk.*` 五族表（规则 / 版本 / 审批 / 审计 / `risk_events` / 熔断 + `limits`）在本仓自证「只有我写、迁移可重放」，并把「裁决权双真相」这条非表形态的缺口登记清楚。
+- **② 上下文**：`internal/pgstore` 在 `cmd/riskservice` 启动时执行 `rule.Migrations()`（幂等 DDL），读-改-写经 `Store.Tx`（PG 行锁）；`risk.limits` 今天仍是**空壳**（本仓台账 `:564` 自证「`risk.limits` 若要端点则另立单」）；ADR-036 §5 的数据归属矩阵把 risk 这一行写成「规则快照已住 `risk.*`，但 `bundle → RiskPolicy` 未接，进程内限额仍来自 core 配置」⇒ **G2 对 risk 不只是表，还包括「限额真相是否唯一」**（这是六仓里唯一有此形态的仓）；`risk.audit_logs`（人操作审计）与 core 的 `audit.message_log`（消息重放）**不是一回事**，护栏别把它们当一个。
+- **③ 要求**：① 迁移重放自证：同一测试库连跑两次 `rule.Migrations()`，行数 / `pg_indexes` / 列集指纹逐位不变；② 禁跨 schema 写护栏：静态扫本仓 SQL，出现 `quant.` / `market.` / `public.audit_logs` 等**非本仓 schema** 的写语句即红（`public.audit_logs` 属 core，必须豁免名单之外）；③ `risk.limits` 的处置：要么给出「谁写、写什么、消费方怎么读」并立端点，要么显式声明「本表暂不启用」并从 `db-schema.md` 的 owner 表里标注为未启用——**二选一在单内定死，不许留空壳**；④ 把「限额真相」这条按 ADR-036 §5.2 写成临时双 owner：当前写者是 core 的 `risk_manager.*` 配置，目标写者是本仓快照，收口条件指向 `SVC-CORE-RISK-RETIRE`。
+- **④ 约束与非目标**：不 `DROP` 表；不改规则参数词典（QT-74 已 ✅，动它另单）；不接 core 的 `ParseBundle`（跨仓）；不新建与 core 重叠的审计表。
+- **⑤ 验收**：① 重放腿两次指纹逐位相同（贴输出）；② 破坏验证：加一行 `INSERT INTO public.audit_logs` ⇒ 护栏红，还原复绿；③ `risk.limits` 的处置有落档且 `db-schema.md` 一致；④ 「限额真相」双 owner 行写进 `db-schema.md` 并可被 core 反查；⑤ 三条命令绿。
+- **⑥ 边界**：本仓 schema 与真相登记；事件 `actor` 列的 schema 变更**不在本单**（见 `QT-80`，同为本仓但独立验收）。
+
+### QT-80 · 风险事件行带调用方身份（`risk_events.actor` + 写审计）[P1] ⬜
+
+- **① 目标**：让 `POST /api/risk/events` 收进来的每一条事件能回答「谁触发的」，并把这条变更作为 DDL 单独立执行。
+- **② 上下文**：来源是本仓台账 `:422` 那句「要让事件带调用方身份 = 加列 + 加审计写（DDL 变更，**另立单**），不在本票范围」——那张单此前不存在；现状实测：`actor` 取自鉴权 claims 只作用于**规则 create/update/approve 三处**（ADR-0005），`POST /events` 今天**不写审计行**，`risk.risk_events` **没有 actor 列**；core 侧告警回传的 `verdict:"alert"` 事件（`tellurion:cmd/analysis/wiring/risk_events.go`）带的是 service 身份（`sub=service:core`），所以「actor」的取值域必须先定（服务名？还是事件里透传的原始触发者？）。
+- **③ 要求**：① `risk.risk_events` 加 `actor` 列（可空 + 老行为主 `NULL`，不许回填编造值）；② 取值口径定死：优先 claims 的 `sub`（`service:<repo>` 或用户 id），open-access 记常量 `open-access`，与规则审计同一套（ADR-0005 已裁的姿势，不另造）；③ 决定是否同时写审计行（若写，`risk.audit_logs` 的事件类动作要进 `api-schema.md` 的审计读面）；④ `docs/db-schema.md` §事件表 + `api-schema.md` `POST /events` 响应/字段同步；⑤ 迁移走 `rule.Migrations()` 这条唯一路径，且与 G2 的重放腿同批。
+- **④ 约束与非目标**：不改 core 侧的上报报文形状（要改先走 `contracts`，禁第四份手写 DTO）；不把 `actor` 变成授权依据（它是留痕，不是权限）；不回填历史行；不动规则管理面的鉴权档位。
+- **⑤ 验收**：① 用例两条：带 service token 投事件 ⇒ `actor = service:core`；无 token（open-access 回环）⇒ `actor = open-access`，**不再为空串**；② 老行 `actor IS NULL` 且读面不报错；③ 迁移重放腿（连跑两次）指纹不变；④ `db-schema.md` / `api-schema.md` 与实现一致；⑤ 三条命令绿。
+- **⑥ 边界**：本仓列与留痕；「限额真相唯一」归 `SVC-RISK-G2` / `SVC-CORE-RISK-RETIRE`。
+
+### SVC-RISK-G4 · 服务就绪门 G4：开关默认值 · 回传失败语义 · runbook（ADR-036）[P1] ⬜
+
+- **① 目标**：把「本仓不可达时 core 会怎样」「事件回传开关关着时监控端点的空集是设定还是故障」成文，并给出可执行的运维手册。
+- **② 上下文**：core 侧两条开关出厂为 `false`（`config/analysis-service.yaml:122` 的 `resolve_enabled`；`events_enabled` 同批默认关），因此 `monitor/alerts` / `monitor/evaluate` 在默认部署下**必然是空集**——这不是缺陷而是设定，但今天只散落在两仓的施工记录里；本仓侧失败语义已有（全端点 fail-closed，未装配 Authorizer 时 **503 拒绝而非放行**，这是正确姿势）；缺 `/readyz`（属 `SVC-RISK-G1` ①）、缺超时/重试口径、缺 runbook（全 workspace `runbook` 只在 ADR-036 正文出现）。
+- **③ 要求**：① 失败语义表：Authorizer 未装配 / PG 不可达 / 规则库为空 / `resolve` 无生效版本 / `bundle` 参数未知键五类，各给 HTTP 码与调用方动作；② core→risk 与 risk→(无出站) 的超时与重试口径写明（裁决权出仓不许走重试放大：`resolve` 在 run 前一次，重试语义属 core 侧 `QT-77` 的凭证与超时笔）；③ 「空集的两种含义」（未接入 vs 没触发）在 `api-schema.md` 里给**可判别**的返回（例如 `configured: false` 或显式错误码），这是本仓最容易说谎的地方；④ `docs/runbook.md`：起停、看审计、重放迁移、熔断人工解除、开关核对；⑤ 一次演练：停掉本仓 ⇒ core 的 `risk_rules_hash` 腿与告警 relay 腿都**响亮失败且不静默降级**（core 侧 `SVC-CORE-RISK-RETIRE` ④ 的护栏）。
+- **④ 约束与非目标**：不引 APM/告警通道；不做高可用；不改 `events_enabled` / `resolve_enabled` 的出厂值（值本身归 `tellurion:QT-77` 与 `SVC-CORE-RISK-RETIRE` ④）；不把检测器搬进本仓（U7 已裁）。
+- **⑤ 验收**：① 失败语义表五类各有用例或注明原因；② 「空集可判别」有一条用例断言响应里带得出判别位；③ 演练有真退出码（停服前后 core 侧各一次，输出贴进本单施工记录）；④ runbook 每条命令当场执行；⑤ 三条命令绿。
+- **⑥ 边界**：本仓运维面与语义判别；跨仓开关值与凭证归 core 侧两单。
 
 ## 施工序（候选单，开工前必须展开成六字段）
 
