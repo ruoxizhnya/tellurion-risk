@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-25
-verified-by: 裁-17 服务间角色 `service`（`resolve` / `events` 两条，ADR-0006）；QT-42 X3c 的 core 腿（告警生产侧接线落地）+ F3 账目订正（hash 半边已落 / bundle 半边仍待）
+last-verified: 2026-10-26
+verified-by: QT-74 规则参数字典落链路口径（写侧严格 / 读侧只拒未知键 / scope 只消费 global 的显式声明）
 ---
 
 # Dataflow — tellurion-risk
@@ -54,7 +54,8 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
 
 ### 规则变更（已实现）
 
-1. `POST /api/risk/rules`：校验冻结枚举与 params（JSON 对象、≤64 KiB、拒尾随内容）→ 规范化 →
+1. `POST /api/risk/rules`：校验冻结枚举与 params（JSON 对象、≤64 KiB、拒尾随内容 →
+   再按 `type` 对参数字典逐项校验键集合与取值，见 `db-schema.md` §7）→ 规范化 →
    `version_hash = H(域, rule_id, revision=1, scope, type, params)` → 落 `rule_defs(head=1, active=NULL, status=draft)`
    + `rule_revisions(revision=1, status=draft, approved_at=NULL)` → 追加 `create` 审计。
    同一 `rule_id` 同内容重放返回 200 与同 hash，**不**再生成 revision；同 id 不同内容 → 409 `idempotency_conflict`。
@@ -84,6 +85,14 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
 9. 该 hash 写入本次 run 的结果（可复现锚点）——**已落**（2026-10-25，QT-66：core 每次 run 提交时调
    `POST /api/risk/resolve` 取 hash 写进 `quant.run_provenance.risk_rules_hash`；未接入记空串 +
    `not_configured`，取不到即 run `failed` + `risk_rules_unavailable`）
+
+### scope 消费口径（QT-74 ④，2026-10-26）
+
+**一期 core 只消费 `scope = global`**。`account` / `strategy` / `symbol` 三档规则照样进快照
+（`Bundle.ForScope` 里可见、`bundle` 字节里也真实存在），但**本 run 不参与裁决**。
+这是**显式口径，不是静默忽略**：回测没有账户身份是事实（不是缺陷），但「下发了却没用」必须看得见
+—— 消费方按 `ForScope(global)` 取规则，其余三档的可见性留给将来的账户态 / 组合级风控。
+未参与裁决的档位**不**做任何默认值兜底（找不到 `global` 规则 = 拒绝开跑）。
 
 ### run 中（热路径，零网络）—— 边界已备，core 接线未做
 
@@ -126,6 +135,7 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
 | 失败点 | 症状 | 兜底 | 现状 |
 |---|---|---|---|
 | 规则参数不是 JSON 对象 / 含尾随内容 / 超 64 KiB | 规则语义不可寻址 | 400 `invalid_params`，**不落库、不推进 head** | ✅ |
+| 规则参数键不在词典 / 取值越域（如权重写成 `10` 百分数形态） | 消费方只能猜字段名与单位（算错钱） | 写侧 400 `invalid_params`（不落库、不推进 head）；`ParseBundle` 对未知键 fail-closed | ✅（`internal/rule/params.go`；`TestParamsDictionary_IsPinned` / `TestValidate_RejectsParamsOutsideDictionary` / `TestParseBundle_RejectsUnknownParamKey`） |
 | `version_hash` 与内容不一致（Store 层） | 内容寻址被破坏 | `ErrRevisionConflict`，拒绝写入；`UNIQUE (rule_id, version_hash)` 兜底 | ✅ |
 | 编辑基准过期 | 覆盖别人的修改 | 409 `revision_conflict`，要求重读 head | ✅ |
 | 未审批规则被当成生效版本 | 生产用上草稿 | 只有 `active_revision` 可达 runtime；`draft` 永不进快照 | ✅（状态机 + DDL CHECK） |
@@ -160,6 +170,7 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
 14. 所有端点未装配鉴权闸时拒绝服务（503），角色不足 403；审计 actor 非空。✅ `TestMonitor_NoAuthorizerFailsClosed` / `TestAuth_ThreeStatesAndActor` / `TestRouteTableEqualsPolicyTable`
 15. 路由表 ≡ 策略表（每个注册路由都有且仅有一个策略条目）。✅ `TestRouteTableEqualsPolicyTable`
 16. `service` 角色只声明在 `POST /api/risk/resolve` 与 `POST /api/risk/events` 两条端点上，且与 `trader` / `admin` **同在一条 `Roles`** 里（any-of 且 kit 不排序 ⇒ 不能互相顶替）；`GET /api/risk/audit` 与规则管理面用 `service` 一律 403；新增档位不放松既有语义（`viewer` 调 `resolve` 仍 403）。✅ `TestPolicy_ServiceRoleScope` / `TestPolicy_ServiceRoleDeclaredExactlyTwice` / `TestPolicy_ServiceRoleCoexistsWithHumanRoles`（ADR-0006）
+17. `params` 的键集合与单位由参数字典唯一裁定：写侧未知键 / 缺必填 / 越域即拒（不落库、不推进 head）；读侧只拒未知键、**不**重校取值域（历史快照仍可读，不变量 8 不被牵连）。✅ `TestParamsDictionary_IsPinned` / `TestValidate_RejectsParamsOutsideDictionary` / `TestParseBundle_RejectsUnknownParamKey` / `TestParseBundle_DoesNotRecheckValueDomain`
 
 ## 5. 与契约文档的关系
 

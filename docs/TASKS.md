@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-26
-verified-by: 派发块 E 组 —— SVC-RISK-G0 落账（Dockerfile + deploy/compose + 默认 8089 与 TCP 探针）；QT-74 词典进行中
+verified-by: 派发块 E 组 —— SVC-RISK-G0 完成（Dockerfile + deploy/compose + 默认 8089 与 TCP 探针）；QT-74 前两步（参数字典 + 写侧严格 + 读侧未知键拒收）已落，迁 contracts / core 消费未做
 ---
 
 # TASKS — tellurion-risk 未完成项
@@ -168,6 +168,9 @@ verified-by: 派发块 E 组 —— SVC-RISK-G0 落账（Dockerfile + deploy/com
 >     `risk.limits` 也补不上洞：[`db-schema.md`](db-schema.md) §1 明写「本切片只建表，读写路径与端点未冻结」
 >     （本文件 5 条施工记录逐条重复此条）。⇒ 词典展开成 **`QT-74`**（本文件「一、本仓任务」末），排在 contracts 发版与
 >     core 消费**之前**（顺序不可颠倒：先有词典才有值得迁的形状）。
+>     **✅ 已解除（2026-10-26，QT-74 前两步）**：词典已落（`internal/rule/params.go` 的 14 标量 +
+>     `db-schema.md` §7 + `api-schema.md` §1.1），写侧严格、读侧拒未知键；本条「词典不存在」的阻塞不再成立。
+>     `risk.limits` 同批定性为「遗留空表、无生产者」。
 >   ② **H3 自述的串行前置未落**：工单写「与 H1 的 QT-71 同仓串行」，实测 core 侧 QT-71 ①~③ **未开工**
 >     （`tellurion:pkg/auth` grep `RoleService` = **0 命中**、`tellurion:cmd/analysis/route_policy.go` 无 service 档位、
 >     `tellurion:docs/TASKS.md:1564` 状态仍 ⬜）⇒ H3 排在了自己的前置之前。
@@ -500,7 +503,7 @@ verified-by: 派发块 E 组 —— SVC-RISK-G0 落账（Dockerfile + deploy/com
 
 ---
 
-### QT-74 · 规则参数词典：四类规则的 `params` 字段名 / 单位 / scope 消费口径 [P1] ⬜
+### QT-74 · 规则参数词典：四类规则的 `params` 字段名 / 单位 / scope 消费口径 [P1] 🔶（本批：词典 + 写侧严格 + 读侧未知键拒收已落；迁 contracts / core 消费未做）
 
 > 2026-10-25 由 H3（core 侧消费接线）前提核对展开成六字段单。触发点是 QT-42 未落项 3' 的 ①：**源头不冻结词典，
 > `bundle` → `ParseBundle` → `RiskPolicy` 这条链只能由消费方猜字段名和单位**——那是本项目算错过钱的缺陷类型
@@ -557,6 +560,65 @@ verified-by: 派发块 E 组 —— SVC-RISK-G0 落账（Dockerfile + deploy/com
   把 `max_position_weight` 夹具值从 `0.10` 改成 `10`（百分数形态）⇒ 取值域校验必须红。两处逐字节还原后复跑绿。
 - **⑥ 边界**：只到「本仓把 params 的形状与单位说清楚 + 写侧守住」；`Snapshot`/`SnapshotRule`/`Bundle` 迁 contracts、
   core 侧 bundle→限额映射、`risk.limits` 若要端点则另立单，**都在本单之外**。
+
+> **施工记录（2026-10-26 · 派发块 E 组 · QT-74 前两步）**
+>
+> 已交付（本仓）：
+>
+> - `internal/rule/params.go`（新增）：`ParamKind`（`float` / `int`）+ `ParamSpec`（字段名 / 类型 / 单位 /
+>   取值域区间 / 必填）+ `paramsByType`（**14 个标量**，按四类 `RuleType` 分组：`position_sizing` 5 /
+>   `stop_loss` 5 / `take_profit` 1 / `regime` 3）+ `ParamsDictionary()`（返回副本）。
+>   **写侧** `validateParams`：未知键 / 缺必填 / 类型不符（int 给小数）/ `NaN` / `Inf` / 越出取值域 /
+>   `fast_ma_period >= slow_ma_period` / `min_position_weight > max_position_weight` 一律 `ErrInvalidParams`
+>   → 400 `invalid_params`。**读侧** `rejectUnknownParamKeys`：只拒词典外的键名。
+> - `internal/rule/model.go`：`Revision.Validate` 在 canonical 化与 64 KiB 上限之后接**写侧词典校验**
+>   （`Create` / `Update` 共用这一条路径，所以两条写入口同时被守住）。
+> - `internal/rule/snapshot.go`：`ParseBundle` 在 hash 复算之后逐条 `rejectUnknownParamKeys`；
+>   **不**重校必填与取值域（理由见下「与 ③ 的差异」）。`SnapshotHash` / `canonicalParams` 编码**一字未改**。
+> - 夹具改键（两包全量）：`internal/rule/snapshot_test.go:144` 的 `{"max_pct":10}` → `sizingParams`
+>   （`max_position_weight` = `0.10` 小数形态）；同批把 `{"pct":…}` / `{"tiers":…}` / `{"w":…}` / `{"window":…}`
+>   全部换成词典键（`rule_test.go` / `snapshot_test.go` / `tx_test.go` / `httpapi/api_test.go` /
+>   `httpapi/snapshot_test.go`）。`git grep -n '"max_pct"' -- internal/rule` = **0 命中**。
+> - 测试：`TestParamsDictionary_IsPinned`（14 项逐项钉住名称/类型/单位 + `ParamsDictionary` 返回副本）、
+>   `TestValidate_RejectsParamsOutsideDictionary`（9 条 fail-closed，并断言**不落库**）、
+>   `TestValidate_AcceptsDictionaryShapes`（四类合法形状 + 权重上界 1）、
+>   `TestParseBundle_RejectsUnknownParamKey`、`TestParseBundle_DoesNotRecheckValueDomain`。
+> - 文档同笔：`db-schema.md` §7（词典唯一真相源 + 变更规则 + `risk.limits` 处置）、§1/§6 的 `risk.limits`
+>   定性；`api-schema.md` §1.1（对外输入口径，与 §7 同名同序）；`dataflow.md` 规则变更步骤 1、
+>   新增「scope 消费口径」节、失败表一行、不变量 17。
+>
+> 验收（真实输出，2026-10-26 本机 Go 1.25.14）：
+>
+> - `go build ./...` → **0**；`go vet ./...` → **0**；`go test ./... -count=1` →
+>   `ok tellurion-risk/{cmd/riskservice,internal/breaker,internal/event,internal/httpapi,internal/pgstore,internal/rule}`，
+>   退出 **0**；`gofmt -l .` 空。
+> - `docker compose -f deploy/compose.yaml config -q` → **0**。
+> - `git grep -n '"max_pct"' -- internal/rule` → **0 命中**（退出 1 = 无匹配；本机无 `rg`，用等价 `git grep`）。
+> - **破坏验证 ①（键名）**：把夹具里的 `max_position_weight` 改回 `max_pct` ⇒ `go test ./internal/rule` **红**
+>   （4 条：`unknown param "max_pct" for rule type "position_sizing"`），`MUT1_EXIT=1`。
+> - **破坏验证 ②（单位形态）**：把夹具值从 `0.10` 改成 `10`（百分数形态）⇒ **红**
+>   （4 条：`param "max_position_weight" (10) is outside its domain (0,1]`），`MUT2_EXIT=1`。
+> - 两次**逐字节还原**（`sha256 0F4CA6C35678E858…` 与改前一致）后复跑绿（`RESTORED1_EXIT=0`）。
+>
+> **与 ③「读侧不重校键集合」的差异（如实登记，不悄悄改口径）**：
+>
+> - 本批派发原文写「`ParseBundle` 对未知键 fail-closed」，而 ③ 写「读侧不重校键集合」。实现取**派发原文**并收窄：
+>   **只拒词典外的键名**，**不**校验必填、**不**校验取值域。
+> - 相容性论证：词典的演进纪律是「**只增不删、不改单位口径**」（`db-schema.md` §7.3），所以历史快照的键必然仍在词典内；
+>   真正会让历史 hash 不可读的是「重校必填 / 取值域」和「删键改名」，这两条**都没做**
+>   （`TestParseBundle_DoesNotRecheckValueDomain` 用百分数形态的快照证明读侧不重校取值域）。
+> - **风险**：词典**之前**写入的旧键快照（如 `{"pct":…}`）本批之后**读不回来**。今天无生产数据
+>   （G0 之前本仓从未部署），影响为零；一旦有真实历史表，删键 / 改名必须先升域标签（v2），不许直接改词典。
+>
+> 未落项（本单仍未完结，**不得**按已交付理解）：
+>
+> 1. **迁 contracts（跨仓，A 组立单）**：`Snapshot` / `SnapshotRule` / `Scope` / `RuleType` / hash 纯函数 /
+>    4 哨兵按 ADR-0001 ① 迁 `contracts/risk`，**编码逐字节搬运**。本批**未迁**（禁区）。
+> 2. **core 消费侧（跨仓，`SVC-RISK-G3` / B 组）**：`bundle → ParseBundle → RiskPolicy` 与
+>    `risk_manager.*` 的 14 标量逐字段映射；本批只保证「词典可查、写侧守住」。
+> 3. **数值换算口径（§5 第 7 条待定）**：本仓已按 QT-74 ② 的表把权重冻结为**小数**；
+>    core 侧 `risk_manager.*` 若与小数不同量纲，换算与新旧对拍仍待裁决，**不在本仓**。
+> 4. **`risk.limits` 启用**：本批已二选一取「遗留空表、无生产者」（不算欠账）；将来启用需先立单 + 改 `db-schema.md` §7.4。
 
 ---
 

@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-25
-verified-by: QT-42 X3c 的 core 腿——risk_events 有了生产者（告警流）；同批登记「事件回传不落审计行 / 无 actor 列」
+last-verified: 2026-10-26
+verified-by: QT-74 规则参数字典落文档（§7 十四标量 + §1/§6 的 `risk.limits` 定性为遗留空表）
 ---
 
 # DB Schema — tellurion-risk
@@ -17,7 +17,7 @@ verified-by: QT-42 X3c 的 core 腿——risk_events 有了生产者（告警流
 | `risk.rule_defs` | 规则定义（类型 / 参数归属 / 适用范围），`head_revision` 指向当前 head，`active_revision` 指向生效版本 | ✅ DDL + Memory/PG Store（2026-10-24） |
 | `risk.rule_revisions` | 版本追加 + 审批状态（draft→approved→active→deprecated）+ `version_hash` | ✅ 同上 |
 | `risk.rule_snapshots` | run 前下发的规则快照（内容寻址；回测结果记 `risk_rules_hash`） | ✅ DDL + Memory/PG 读写（`internal/rule/snapshot.go` / `store.go` / `internal/pgstore`） |
-| `risk.limits` | 账户 / 策略 / 标的级限额 | 🔶 DDL 已落（2026-10-24，仅建表；读写路径与端点未冻结） |
+| `risk.limits` | 账户 / 策略 / 标的级限额 | 🔶 DDL 已落（2026-10-24）；**遗留空表、无生产者** —— 限额走 `rule_snapshots`（2026-10-26 QT-74 ⑤ 二选一取此口径，见 §7.4） |
 | `risk.risk_events` | 裁决事件留痕（run 后异步批量回传；去重键 `run_id + order_id + event_seq`，`raw` 保留原文）；监控的**唯一读源**（敞口 / 告警 / evaluate） | ✅ DDL + Memory/PG（2026-10-24，X3c；监控读取 2026-10-24） |
 | `risk.circuit_orders` | 熔断指令下发记录（幂等键 `breaker_id`；载荷身份 action + scope + reason） | ✅ DDL + Memory/PG（2026-10-24，X3d） |
 | `risk.audit_logs` | **规则与审批的操作审计**（谁改了哪条规则、谁批的） | 🔶 DDL 已落（**新表**，与现 `audit_logs` 无关、不复用——后者是 ADR-017 鉴权访问审计（`tellurion:pkg/auth` 写入），留 core） |
@@ -37,7 +37,8 @@ verified-by: QT-42 X3c 的 core 腿——risk_events 有了生产者（告警流
 - `limits`（2026-10-24 建表）：`PRIMARY KEY (scope, subject, limit_key)`；
   `CHECK (scope IN (...))` 与 Go 侧冻结枚举同源；`CHECK ((scope = 'global') = (subject = ''))` ——
   `global` 无主体，其余 scope 必须给主体（账户 id / 策略 id / 标的代码）。
-  本切片只建表，读写路径与端点未冻结（登记在 `docs/TASKS.md` QT-42 未落项）。
+  **2026-10-26（QT-74 ⑤）定性为遗留空表**：限额的真相是 `rule_snapshots.rules[].params`（§7），
+  本表**无生产者、无读方**，不冻结 `limit_key`；将来若要启用，先立单 + 改本节。
 - `risk_events`（2026-10-24，X3c）：`PRIMARY KEY (run_id, order_id, event_seq)` —— 去重键即主键；
   `CHECK (event_seq >= 0)`；`raw JSONB NOT NULL` 保存事件原文（未知字段不丢），
   `payload JSONB` 是调用方显式给的审计载荷；`received_at` 由服务端盖，`event_ts` 是调用方时间。
@@ -125,7 +126,9 @@ verified-by: QT-42 X3c 的 core 腿——risk_events 有了生产者（告警流
 
 - **审计 actor 来源（2026-10-25 已落）**：鉴权挂在全部端点（ADR-0005），`actor` 从 claims 取 `username`
   （缺失退 `subject`）；显式 open-access（无 secret + 回环）记常量 `open-access`，**不再写空串**。
-- **`risk.limits` 的读写路径**：表已建，但限额的读取口径（快照附带 / 独立端点）与写入端点未冻结（R2 相关）。
+- **`risk.limits` 的读写路径（2026-10-26 已定，QT-74 ⑤）**：表保留为**遗留空表、无生产者**；
+  限额走 `rule_snapshots.rules[].params`（§7），**不**冻结 `limit_key`、**不**开端点。
+  这与本文件此前重复 5 次的「读写口径未冻结」是同一件事的终局：二选一取「遗留空表」。
 - **事件监控聚合（读取侧）**：~~随 U7 未裁~~ ✅ 2026-10-24（ADR-0004）——三端点只读 `risk_events`。
   生产侧接线 ✅（2026-10-25）：core 的告警按 `POST /events` 回传（`verdict:"alert"`、
   `run_id="core:alert-loop"`、`order_id=Alert.ID`、`event_seq=0`；落点
@@ -133,3 +136,54 @@ verified-by: QT-42 X3c 的 core 腿——risk_events 有了生产者（告警流
   仍未落：外部推送通道（webhook / 消息平台）；**事件回传不落审计行** —— 本表无 actor / account 列，
   `actorOf` 只作用于规则三端点（票面「actor 取自 claims」指的是 `risk.audit_logs`）。
 - **熔断执行方与 ACK**：`circuit_orders.status` 今天只写 `'applied'`；谁执行、如何回报 `acknowledged/failed` 随升格 ADR（R3 同源）。
+
+## 7. 规则参数字典（`rule_snapshots.rules[].params`）
+
+> **本节是 `params` 的唯一真相源**（2026-10-26，QT-74）。`docs/api-schema.md` §1.1 有同一张表，
+> 两处**同名同序**；代码侧唯一实现在 `internal/rule/params.go` 的 `paramsByType`，
+> `TestParamsDictionary_IsPinned` 把 14 个标量逐项钉死。三处任一漂移都应被打回。
+
+### 7.1 14 个标量（按 `type` 分组）
+
+| `type` | 字段 | 类型 | 单位 / 口径 | 取值域 | 必填 |
+|---|---|---|---|---|---|
+| `position_sizing` | `target_volatility` | float | 年化小数（0.15 = 15%） | `> 0` | ✅ |
+| | `max_position_weight` | float | 组合净值小数占比（0.10 = 10%） | `(0, 1]` | ✅ |
+| | `min_position_weight` | float | 组合净值小数占比 | `[0, 1]`，且 `<= max_position_weight` | ✅ |
+| | `lookback_days` | int | 交易日 | `> 0` | ✅ |
+| | `annualization_factor` | float | 年化因子（√252 ≈ 16.0） | `> 0` | ✅ |
+| `stop_loss` | `atr_period` | int | bar 数 | `> 0` | ✅ |
+| | `base_multiplier` | float | ATR 倍数 | `> 0` | ✅ |
+| | `bull_multiplier` | float | ATR 倍数 | `> 0` | ✅ |
+| | `bear_multiplier` | float | ATR 倍数 | `> 0` | ✅ |
+| | `sideways_multiplier` | float | ATR 倍数 | `> 0` | ✅ |
+| `take_profit` | `atr_multiplier` | float | ATR 倍数 | `> 0` | ✅ |
+| `regime` | `fast_ma_period` | int | bar 数 | `> 0`，且 `fast < slow` | ✅ |
+| | `slow_ma_period` | int | bar 数 | `> 0` | ✅ |
+| | `vol_lookback` | int | bar 数 | `> 0` | ✅ |
+
+**单位是唯一会让人算错钱的列**：权重一律**小数**（`0.10` = 10%），禁止 `pct` / 百分数形态。
+反例：`max_pct = 10` 按小数读是 10 倍净值、按百分数读是 10%，差两个数量级——这正是 QT-74 立项的原因。
+
+### 7.2 写侧严格，读侧只拒未知键
+
+- **写侧**（`POST /rules`、`PUT /rules/{id}` → `Revision.Validate`）：未知键 / 缺必填 /
+  类型不符（int 给小数）/ `NaN` / `Inf` / 越出取值域 / `fast_ma_period >= slow_ma_period` /
+  `min_position_weight > max_position_weight` 一律 `ErrInvalidParams` → `400 invalid_params`，
+  **不落库、不推进 head**。
+- **读侧**（`ParseBundle`）：只拒**词典外的键名**（fail-closed：未知字段消费方无从解释，不许猜），
+  **不**重校必填与取值域。历史快照是按当年词典写入的，用今天的取值域卡它会让钉住的历史
+  `risk_rules_hash` 不可读（`docs/dataflow.md` §4 不变量 8）。
+- `SnapshotHash` / `canonicalParams` 的编码**不变**：词典只参与写侧准入，不参与 hash。
+
+### 7.3 变更规则
+
+| 变更 | 级别 | 后果 |
+|---|---|---|
+| 新增字段 / 新增 `RuleType` | MINOR | 旧快照仍可读（读侧不校验必填）；消费方按新键映射 |
+| 删字段 / 改名 / **改单位口径** | **breaking** | 必须升域标签（`DomainSnapshotHash` / `DomainVersionHash` 升 `v2`）——单位改了而键名没变时 **hash 一个字节都不变**，历史 run 的含义会静默漂移 |
+
+### 7.4 `risk.limits` 的处置
+
+限额的真相在 `rule_snapshots.rules[].params`（本节）；`risk.limits` 保留 DDL 但**无生产者、无读方**，
+不冻结 `limit_key`（与 §1 约束、§6 同条）。

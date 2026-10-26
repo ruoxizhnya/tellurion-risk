@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-25
-verified-by: 裁-15 鉴权接线（kit net/http 适配 + 全端点策略表 + 审计读 + actor 取自 claims）；裁-17 服务间角色 `service`（`resolve` / `events` 两条，ADR-0006）；QT-42 X3c 的 core 腿（告警生产侧接线已落，`alerts` / `evaluate` 不再是结构性空集）
+last-verified: 2026-10-26
+verified-by: QT-74 规则参数字典落对外输入口径（§1.1，与 db-schema §7 同名同序）
 ---
 
 # API Schema — tellurion-risk
@@ -54,6 +54,35 @@ verified-by: 裁-15 鉴权接线（kit net/http 适配 + 全端点策略表 + �
 | PUT | `/api/risk/rules/{id}` | 改规则 → 生成新 revision（draft） | ✅ |
 | POST | `/api/risk/rules/{id}/approve` | 审批激活（draft → approved → active） | ✅ |
 | GET | `/api/risk/rules?scope=&active=true` | 查询（列表项 = head revision 摘要） | ✅ |
+
+#### 1.1 `params` 输入口径（规则参数字典，2026-10-26 QT-74）
+
+> 与 [`db-schema.md`](db-schema.md) §7 **同一张表、同名同序**：那边是数据形状，这边是对外输入口径。
+> 代码唯一实现是 `internal/rule/params.go` 的 `paramsByType`，`TestParamsDictionary_IsPinned` 逐项钉住。
+
+| `type` | 字段 | 类型 | 单位 / 口径 | 取值域 | 必填 |
+|---|---|---|---|---|---|
+| `position_sizing` | `target_volatility` | float | 年化小数（0.15 = 15%） | `> 0` | ✅ |
+| | `max_position_weight` | float | 组合净值小数占比（0.10 = 10%） | `(0, 1]` | ✅ |
+| | `min_position_weight` | float | 组合净值小数占比 | `[0, 1]`，且 `<= max_position_weight` | ✅ |
+| | `lookback_days` | int | 交易日 | `> 0` | ✅ |
+| | `annualization_factor` | float | 年化因子（√252 ≈ 16.0） | `> 0` | ✅ |
+| `stop_loss` | `atr_period` | int | bar 数 | `> 0` | ✅ |
+| | `base_multiplier` | float | ATR 倍数 | `> 0` | ✅ |
+| | `bull_multiplier` | float | ATR 倍数 | `> 0` | ✅ |
+| | `bear_multiplier` | float | ATR 倍数 | `> 0` | ✅ |
+| | `sideways_multiplier` | float | ATR 倍数 | `> 0` | ✅ |
+| `take_profit` | `atr_multiplier` | float | ATR 倍数 | `> 0` | ✅ |
+| `regime` | `fast_ma_period` | int | bar 数 | `> 0`，且 `fast < slow` | ✅ |
+| | `slow_ma_period` | int | bar 数 | `> 0` | ✅ |
+| | `vol_lookback` | int | bar 数 | `> 0` | ✅ |
+
+- **写侧严格**：`POST /rules` / `PUT /rules/{id}` 的 `params` 按 `type` 校验——未知键、缺必填、
+  类型不符（int 给小数）、`NaN` / `Inf`、越出取值域、`fast_ma_period >= slow_ma_period`、
+  `min_position_weight > max_position_weight` 一律 `400 invalid_params`，**不落库、不推进 head**。
+- **读侧只拒未知键**：`rule.ParseBundle` 拒绝词典外的键名（fail-closed），但**不**重校必填与取值域
+  ——历史快照按当年词典写入，重校会让钉住的历史 `risk_rules_hash` 不可读（`db-schema.md` §7.2）。
+- **单位**：权重一律**小数**（`0.10` = 10%）；`pct` / 百分数形态被拒。这是本项目算错过钱的那一列。
 
 ### 审计读（viewer）—— ✅ 已实现（2026-10-25）
 
