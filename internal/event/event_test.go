@@ -40,7 +40,7 @@ func TestIngest_DedupesByRunOrderSeq(t *testing.T) {
 		rawEvent(1, ""),             // 同键 → duplicate
 		rawEventFor("ord-2", 1, ""), // 同 run/seq、不同 order_id → 不同键，必须接受
 		rawEvent(2, ""),
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestIngest_DedupesByRunOrderSeq(t *testing.T) {
 	// 同一批重放：全部是 duplicate，不重复落库。
 	res, err = svc.Ingest(ctx, []json.RawMessage{
 		rawEvent(1, ""), rawEventFor("ord-2", 1, ""), rawEvent(2, ""),
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("replay Ingest: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestIngest_PartialFailureKeepsValidItems(t *testing.T) {
 		json.RawMessage(`{"run_id":"run-1","order_id":"ord-1","event_seq":2,"ts":"2026-10-24T11:59:00Z","unexpected":true}`), // 合法：未知字段保留
 		json.RawMessage(`{"order_id":"ord-1","event_seq":3,"ts":"2026-10-24T11:59:00Z"}`),                                    // 缺 run_id
 		json.RawMessage(`[1,2]`), // 不是对象
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
@@ -105,12 +105,22 @@ func TestIngest_PartialFailureKeepsValidItems(t *testing.T) {
 	}
 }
 
+func TestIngest_RecordsCallerActor(t *testing.T) {
+	svc, store := newService(t)
+	if _, err := svc.Ingest(context.Background(), []json.RawMessage{rawEvent(1, "")}, "service:core"); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if got := store.stored()[0].Actor; got != "service:core" {
+		t.Fatalf("actor = %q, want service:core", got)
+	}
+}
+
 func TestIngest_RejectsEmptyBatch(t *testing.T) {
 	svc, _ := newService(t)
-	if _, err := svc.Ingest(context.Background(), nil); !errors.Is(err, ErrInvalidParams) {
+	if _, err := svc.Ingest(context.Background(), nil, ""); !errors.Is(err, ErrInvalidParams) {
 		t.Fatalf("empty batch: want ErrInvalidParams, got %v", err)
 	}
-	if _, err := svc.Ingest(context.Background(), []json.RawMessage{}); !errors.Is(err, ErrInvalidParams) {
+	if _, err := svc.Ingest(context.Background(), []json.RawMessage{}, ""); !errors.Is(err, ErrInvalidParams) {
 		t.Fatalf("empty slice: want ErrInvalidParams, got %v", err)
 	}
 }

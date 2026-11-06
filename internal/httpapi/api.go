@@ -293,7 +293,7 @@ func (s *Server) ingestEvents(w http.ResponseWriter, r *http.Request) {
 		writeInvalidParams(w, err)
 		return
 	}
-	result, err := s.events.Ingest(r.Context(), req.Events)
+	result, err := s.events.Ingest(r.Context(), req.Events, actorOf(r))
 	if err != nil {
 		if errors.Is(err, event.ErrInvalidParams) {
 			writeInvalidParams(w, err)

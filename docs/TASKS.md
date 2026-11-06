@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-26
-verified-by: 派发块 E 组 —— SVC-RISK-G0 完成（Dockerfile + deploy/compose + 默认 8089 与 TCP 探针）；QT-74 前两步（参数字典 + 写侧严格 + 读侧未知键拒收）已落，迁 contracts / core 消费未做
+last-verified: 2026-11-07
+verified-by: QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两条用例 + 破坏验证），PG 集成腿未执行记 🔶；此前 SVC-RISK-G0 完成（Dockerfile + deploy/compose + 默认 8089 与 TCP 探针）；QT-74 前两步已落，迁 contracts / core 消费未做
 ---
 
 # TASKS — tellurion-risk 未完成项
@@ -649,7 +649,7 @@ verified-by: 派发块 E 组 —— SVC-RISK-G0 完成（Dockerfile + deploy/com
 - **⑤ 验收**：① 重放腿两次指纹逐位相同（贴输出）；② 破坏验证：加一行 `INSERT INTO public.audit_logs` ⇒ 护栏红，还原复绿；③ `risk.limits` 的处置有落档且 `db-schema.md` 一致；④ 「限额真相」双 owner 行写进 `db-schema.md` 并可被 core 反查；⑤ 三条命令绿。
 - **⑥ 边界**：本仓 schema 与真相登记；事件 `actor` 列的 schema 变更**不在本单**（见 `QT-80`，同为本仓但独立验收）。
 
-### QT-80 · 风险事件行带调用方身份（`risk_events.actor` + 写审计）[P1] ⬜
+### QT-80 · 风险事件行带调用方身份（`risk_events.actor` + 写审计）[P1] 🔶（2026-11-07 代码已落；PG 集成腿未执行）
 
 - **① 目标**：让 `POST /api/risk/events` 收进来的每一条事件能回答「谁触发的」，并把这条变更作为 DDL 单独立执行。
 - **② 上下文**：来源是本仓台账 `:422` 那句「要让事件带调用方身份 = 加列 + 加审计写（DDL 变更，**另立单**），不在本票范围」——那张单此前不存在；现状实测：`actor` 取自鉴权 claims 只作用于**规则 create/update/approve 三处**（ADR-0005），`POST /events` 今天**不写审计行**，`risk.risk_events` **没有 actor 列**；core 侧告警回传的 `verdict:"alert"` 事件（`tellurion:cmd/analysis/wiring/risk_events.go`）带的是 service 身份（`sub=service:core`），所以「actor」的取值域必须先定（服务名？还是事件里透传的原始触发者？）。
@@ -657,6 +657,15 @@ verified-by: 派发块 E 组 —— SVC-RISK-G0 完成（Dockerfile + deploy/com
 - **④ 约束与非目标**：不改 core 侧的上报报文形状（要改先走 `contracts`，禁第四份手写 DTO）；不把 `actor` 变成授权依据（它是留痕，不是权限）；不回填历史行；不动规则管理面的鉴权档位。
 - **⑤ 验收**：① 用例两条：带 service token 投事件 ⇒ `actor = service:core`；无 token（open-access 回环）⇒ `actor = open-access`，**不再为空串**；② 老行 `actor IS NULL` 且读面不报错；③ 迁移重放腿（连跑两次）指纹不变；④ `db-schema.md` / `api-schema.md` 与实现一致；⑤ 三条命令绿。
 - **⑥ 边界**：本仓列与留痕；「限额真相唯一」归 `SVC-RISK-G2` / `SVC-CORE-RISK-RETIRE`。
+
+> **施工记录（2026-11-07）**：
+> - **取值域裁决（③②）**：**复用**既有 `httpapi.actorOf`（不另造）：`username` 优先、缺失退 `subject`、open-access 记常量 `open-access`。服务 token 没有 `username` ⇒ 落 `sub`（如 `service:core`），与票面「优先 sub」在服务身份上等价；人身份仍与规则审计同口径。
+> - **③③「是否同时写审计行」= 不写**：`risk.audit_logs.action` 的 CHECK 只允许 `create/update/approve/deprecate`（规则动作），事件不是规则动作；要写须改 CHECK + 扩审计读面语义，属另一单。已在 `db-schema.md` / `api-schema.md` 写明这句判断。
+> - **落点**：`rule/ddl.go` 建表加 `actor TEXT`（可空、无默认、不回填）+ `ALTER TABLE ... ADD COLUMN IF NOT EXISTS actor TEXT`（老库补列，同走 `Migrations()` 唯一路径）；`event.Record` 加 `Actor`；`Ingest(ctx, raws, actor)` 由 HTTP 层传 `actorOf(r)`；`pgstore.PutEvents` 写 `actor`（空串落 NULL），`QueryEvents` 用 `COALESCE(actor,'')` 回显。
+> - **验收（真实输出）**：`gofmt -l .` 空输出、`go build ./...` / `go vet ./...` / `go test ./... -count=1` 全绿（6 个包 `ok`）。
+> - **用例**：`event.TestIngest_RecordsCallerActor`；`httpapi.TestEvents_RECORDActorFromClaimsNotBody` 三条（`service-token-sub` → `service:core`、`user-username` → `alice`、`open-access` → `open-access`，且请求体里伪造的 `"actor":"forged"` 不生效）。
+> - **破坏验证**：把 `ingestEvents` 的 `actorOf(r)` 换成常量 `"open-access"` → 两条子用例红（`DESTROY_EXIT=1`，报文 `actor = "open-access", want "service:core"`）；还原后复绿。
+> - **未执行（如实）**：⑤②「老行 `actor IS NULL` 且读面不报错」、⑤③「迁移连跑两次指纹不变」需要真 PG——本机无库（`127.0.0.1:5445` 无监听、Docker 引擎未起），本轮**未跑**；用例侧仅由 DDL 文本与 `COALESCE` 保证，故本单记 🔶 不标 ✅。补齐条件：起临时 PG（约定端口 5445、容器名带 `tellurion-risk` 前缀）后跑 `Migrations()` 两遍 + 插老行读回。
 
 ### SVC-RISK-G4 · 服务就绪门 G4：开关默认值 · 回传失败语义 · runbook（ADR-036）[P1] ⬜
 

@@ -15,7 +15,7 @@ var _ event.Reader = (*Store)(nil)
 // 排序固定为 event_ts DESC + 去重键，保证同参数两次查询顺序一致。
 func (s *Store) QueryEvents(ctx context.Context, q event.Query) ([]event.Record, bool, error) {
 	query := `SELECT run_id, order_id, event_seq, symbol, verdict, reason,
-		payload, event_ts, raw, received_at
+		payload, event_ts, raw, received_at, COALESCE(actor, '')
 		FROM risk.risk_events`
 	var (
 		conds []string
@@ -87,7 +87,7 @@ func scanRecord(row rowScanner) (event.Record, error) {
 		raw     []byte
 	)
 	if err := row.Scan(&rec.RunID, &rec.OrderID, &rec.EventSeq, &rec.Symbol, &rec.Verdict,
-		&rec.Reason, &payload, &rec.Ts, &raw, &rec.ReceivedAt); err != nil {
+		&rec.Reason, &payload, &rec.Ts, &raw, &rec.ReceivedAt, &rec.Actor); err != nil {
 		return event.Record{}, err
 	}
 	if payload != nil {
@@ -95,4 +95,12 @@ func scanRecord(row rowScanner) (event.Record, error) {
 	}
 	rec.Raw = append(json.RawMessage(nil), raw...)
 	return rec, nil
+}
+
+// nullIfEmpty 让空 actor 落库为 NULL（老行语义），而不是空串参与统计。
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }

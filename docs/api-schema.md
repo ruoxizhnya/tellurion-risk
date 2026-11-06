@@ -26,8 +26,7 @@ verified-by: QT-74 规则参数字典落对外输入口径（§1.1，与 db-sche
 > 与 `trader` / `admin` **并列**写在同一条 `Roles` 里。
 > **监控三端点的检测器不搬出 core**：它们只读 `risk.risk_events` 做聚合与报表，`evaluate` **不运行检测器**
 > （ADR-0004）。
-> **未落地**：外部推送通道；`POST /events` **不写审计行**（`actorOf` 今天只作用于规则 create/update/approve
-> 三处，`risk.risk_events` 也没有 actor / account 列 —— 事件回传的调用方身份不落库，见 `docs/TASKS.md` 未落项）。
+> **未落地**：外部推送通道；`POST /events` **不写审计行**（`risk.audit_logs` 的 `action` 枚举只允许规则动作），但事件自身的调用方身份已落 `risk.risk_events.actor`（QT-80，2026-11-07）。
 > **已落（2026-10-25 订正，原先这两条记在「未落地」里）**：
 > ① **告警生产侧接线**：core 的 `core:pkg/alert`（6 个检测器 + 经 `AlertManager.Fire` 进来的对账 / 双跑差异）
 > 已按 `POST /api/risk/events` 回传 `verdict:"alert"` 的事件，落点在 `core:cmd/analysis/wiring/risk_events.go`
@@ -128,6 +127,7 @@ verified-by: QT-74 规则参数字典落对外输入口径（§1.1，与 db-sche
 > 请求 `{"events":[{run_id, order_id, event_seq, symbol?, verdict?, reason?, payload?, ts}]}`；
 > 全部成功 → `200 {accepted, duplicates}`；部分条目失败 → `207 {accepted, duplicates, failed:[{index, code, message}], code:"partial_failure"}`。
 > 去重键 `run_id + order_id + event_seq`；未知字段不丢（落库原文进 `raw` JSONB）。
+> **`actor` 留痕（QT-80，2026-11-07）**：每行落调用方身份，取自鉴权 claims（`username` 优先、缺失退 `subject`；open-access 记 `open-access`），**不由请求体自报**（body 里带 `actor` 按未知字段忽略/严格解码拒收同一口径，不参与落库）。服务 token 无 `username` ⇒ 落 `sub`（如 `service:core`）。`actor` 不进去重键、不做鉴权、不写 `risk.audit_logs`。
 > 整批不可解析（含空数组）→ `400 invalid_params`；落库失败 → `500 internal`，调用方重试整批（去重键保证幂等）。
 >
 > `POST /api/risk/breakers`（X3d）：

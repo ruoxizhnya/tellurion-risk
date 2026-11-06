@@ -74,6 +74,7 @@ var migrationStatements = []string{
 
 	// risk_events 是 run 后异步回传的裁决事件留痕。去重键 (run_id, order_id, event_seq)；
 	// raw 保存事件原文（未知字段不丢），payload 是调用方显式给的审计载荷。
+	// actor（QT-80）是调用方身份留痕：来自鉴权 claims，不由请求体自报；可空（老行 NULL）。
 	`CREATE TABLE IF NOT EXISTS risk.risk_events (
 		run_id      TEXT NOT NULL,
 		order_id    TEXT NOT NULL,
@@ -85,8 +86,12 @@ var migrationStatements = []string{
 		event_ts    TIMESTAMPTZ NOT NULL,
 		raw         JSONB NOT NULL,
 		received_at TIMESTAMPTZ NOT NULL,
+		actor       TEXT,
 		PRIMARY KEY (run_id, order_id, event_seq)
 	)`,
+
+	// 老库补列（可空、不回填）：CREATE TABLE IF NOT EXISTS 不会改已存在的表。
+	`ALTER TABLE risk.risk_events ADD COLUMN IF NOT EXISTS actor TEXT`,
 
 	// 监控聚合按 event_ts 取时间窗；没有索引时每次读都是全表扫描。
 	`CREATE INDEX IF NOT EXISTS risk_events_ts_idx

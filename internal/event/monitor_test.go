@@ -27,7 +27,7 @@ func mustIngest(t *testing.T, svc *Service, raws ...string) {
 	for _, raw := range raws {
 		batch = append(batch, json.RawMessage(raw))
 	}
-	res, err := svc.Ingest(context.Background(), batch)
+	res, err := svc.Ingest(context.Background(), batch, "open-access")
 	if err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}

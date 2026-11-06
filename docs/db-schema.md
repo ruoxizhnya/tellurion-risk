@@ -46,6 +46,7 @@ verified-by: QT-74 规则参数字典落文档（§7 十四标量 + §1/§6 的 
   **监控读取（2026-10-24）**：按 `event_ts` 时间窗读取，新增索引
   `risk_events_ts_idx ON risk.risk_events (event_ts DESC)`；告警投影只认 `verdict='alert'` 且 `payload`
   合法（`rule` / `severity` / `message`），非法投影计入 `invalid_events` 而不是静默丢弃。
+  **actor 留痕（2026-11-07，QT-80）**：新增 `actor TEXT`（可空，老行 NULL，**不回填**；`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 与建表语句同走 `rule.Migrations()`）。取值来自鉴权 claims（`username` 优先、缺失退 `subject`；open-access 取常量 `open-access`），**不由请求体自报**；空串落库为 NULL。`actor` 不参与去重键、不做鉴权。**不写 `risk.audit_logs` 审计行**：那张表的 `action` 枚举只允许规则动作，事件不是规则动作。
 - `circuit_orders`（2026-10-24，X3d）：`PRIMARY KEY (breaker_id)` —— 幂等键即主键；
   `CHECK (action IN ('halt','cancel_all'))` 与 Go 侧冻结枚举同源；`scope` 复用规则的冻结枚举；
   `status` 今天只写 `'applied'`（执行方 ACK 状态待升格 ADR）；`received_at` 与 `command_ts` 分开存。
@@ -124,8 +125,9 @@ verified-by: QT-74 规则参数字典落文档（§7 十四标量 + §1/§6 的 
 
 ## 6. 待定
 
-- **审计 actor 来源（2026-10-25 已落）**：鉴权挂在全部端点（ADR-0005），`actor` 从 claims 取 `username`
+- **审计 actor 来源（2026-10-25 已落，2026-11-07 扩到事件）**：鉴权挂在全部端点（ADR-0005），`actor` 从 claims 取 `username`
   （缺失退 `subject`）；显式 open-access（无 secret + 回环）记常量 `open-access`，**不再写空串**。
+  `risk.risk_events.actor`（QT-80）复用同一套 `actorOf`：服务 token 无 `username` ⇒ 落 `sub`（如 `service:core`）。
 - **`risk.limits` 的读写路径（2026-10-26 已定，QT-74 ⑤）**：表保留为**遗留空表、无生产者**；
   限额走 `rule_snapshots.rules[].params`（§7），**不**冻结 `limit_key`、**不**开端点。
   这与本文件此前重复 5 次的「读写口径未冻结」是同一件事的终局：二选一取「遗留空表」。
@@ -133,8 +135,8 @@ verified-by: QT-74 规则参数字典落文档（§7 十四标量 + §1/§6 的 
   生产侧接线 ✅（2026-10-25）：core 的告警按 `POST /events` 回传（`verdict:"alert"`、
   `run_id="core:alert-loop"`、`order_id=Alert.ID`、`event_seq=0`；落点
   `core:cmd/analysis/wiring/risk_events.go`，开关 `risk_service.events_enabled` 默认关）。
-  仍未落：外部推送通道（webhook / 消息平台）；**事件回传不落审计行** —— 本表无 actor / account 列，
-  `actorOf` 只作用于规则三端点（票面「actor 取自 claims」指的是 `risk.audit_logs`）。
+  仍未落：外部推送通道（webhook / 消息平台）；**事件回传不落 `risk.audit_logs` 审计行**（动作枚举只含规则动作），
+  但 `risk.risk_events.actor` 已留调用方身份（QT-80，2026-11-07）。
 - **熔断执行方与 ACK**：`circuit_orders.status` 今天只写 `'applied'`；谁执行、如何回报 `acknowledged/failed` 随升格 ADR（R3 同源）。
 
 ## 7. 规则参数字典（`rule_snapshots.rules[].params`）

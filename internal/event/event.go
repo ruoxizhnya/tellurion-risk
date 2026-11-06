@@ -52,11 +52,13 @@ func (e Event) Validate() error {
 	return nil
 }
 
-// Record 是真正落库的一行：规范化后的字段 + 原始 JSON（审计原文）+ 接收时间。
+// Record 是真正落库的一行：规范化后的字段 + 原始 JSON（审计原文）+ 接收时间
+// + 调用方身份（QT-80：来自鉴权 claims，不由请求体自报；空串落库为 NULL）。
 type Record struct {
 	Event
 	Raw        json.RawMessage
 	ReceivedAt time.Time
+	Actor      string
 }
 
 // Failure 是批量里的单条失败项（index = 请求数组下标）。
@@ -158,7 +160,10 @@ func New(opts Options) (*Service, error) {
 
 // Ingest 校验一批原始事件并落库。整批不可解析（空数组）→ ErrInvalidParams；
 // 单条不合法 → 记 Failure 后继续；落库错误 → 原样返回（调用方重试整批，去重键保证幂等）。
-func (s *Service) Ingest(ctx context.Context, raws []json.RawMessage) (Result, error) {
+//
+// actor 是调用方身份（QT-80），来自鉴权 claims（open-access 时为显式常量），
+// 由 HTTP 层传入；它只做留痕，**不参与鉴权，也不进去重键**。
+func (s *Service) Ingest(ctx context.Context, raws []json.RawMessage, actor string) (Result, error) {
 	if len(raws) == 0 {
 		return Result{}, fmt.Errorf("%w: events must contain at least one event", ErrInvalidParams)
 	}
@@ -179,6 +184,7 @@ func (s *Service) Ingest(ctx context.Context, raws []json.RawMessage) (Result, e
 			Event:      ev,
 			Raw:        append(json.RawMessage(nil), raw...),
 			ReceivedAt: receivedAt,
+			Actor:      actor,
 		})
 	}
 

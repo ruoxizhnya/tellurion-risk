@@ -550,11 +550,11 @@ func (s *Store) PutEvents(ctx context.Context, records []event.Record) (int, int
 			}
 			res, err := tx.ExecContext(ctx, `
 				INSERT INTO risk.risk_events
-					(run_id, order_id, event_seq, symbol, verdict, reason, payload, event_ts, raw, received_at)
-				VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10)
+					(run_id, order_id, event_seq, symbol, verdict, reason, payload, event_ts, raw, received_at, actor)
+				VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10, $11)
 				ON CONFLICT (run_id, order_id, event_seq) DO NOTHING`,
 				rec.RunID, rec.OrderID, rec.EventSeq, rec.Symbol, rec.Verdict, rec.Reason,
-				payload, rec.Ts, string(raw), rec.ReceivedAt)
+				payload, rec.Ts, string(raw), rec.ReceivedAt, nullIfEmpty(rec.Actor))
 			if err != nil {
 				return err
 			}
