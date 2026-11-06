@@ -7,7 +7,9 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -74,6 +76,7 @@ func main() {
 			httpapi.WithEvents(events),
 			httpapi.WithBreakers(breakers),
 			httpapi.WithAuthorizer(httpapi.NewAuthorizer(tokens)),
+			httpapi.WithReadiness(stores.ready),
 		).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -107,6 +110,8 @@ type stores struct {
 	rules    rule.Store
 	events   event.Store
 	breakers breaker.Store
+	// ready 是 /readyz 的检查（G1）：PG 可连 + 迁移已执行；内存档恒就绪。
+	ready func(context.Context) error
 }
 
 // openStores 选择持久化实现并跑迁移。空 DSN = Memory（显式告警，避免误上生产）。
@@ -117,13 +122,23 @@ func openStores(dsn string) (stores, func(), error) {
 			rules:    rule.NewMemory(),
 			events:   event.NewMemory(),
 			breakers: breaker.NewMemory(),
+			ready:    func(context.Context) error { return nil },
 		}, func() {}, nil
 	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return stores{}, nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// 启动不可无界阻塞（G1）：连接 + 迁移共用一个超时，可用 RISK_DB_TIMEOUT 调节。
+	timeout := 15 * time.Second
+	if raw := os.Getenv("RISK_DB_TIMEOUT"); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			timeout = d
+		} else {
+			log.Printf("riskservice: ignoring invalid RISK_DB_TIMEOUT=%q, using %v", raw, timeout)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
@@ -135,5 +150,18 @@ func openStores(dsn string) (stores, func(), error) {
 	}
 	log.Printf("riskservice: using PostgreSQL store, migrations applied")
 	st := pgstore.New(db)
-	return stores{rules: st, events: st, breakers: st}, func() { _ = db.Close() }, nil
+	ready := func(ctx context.Context) error {
+		if err := db.PingContext(ctx); err != nil {
+			return fmt.Errorf("postgres unreachable: %w", err)
+		}
+		var migrated bool
+		if err := db.QueryRowContext(ctx, `SELECT to_regclass('risk.rule_defs') IS NOT NULL`).Scan(&migrated); err != nil {
+			return fmt.Errorf("readiness query: %w", err)
+		}
+		if !migrated {
+			return errors.New("migrations not applied")
+		}
+		return nil
+	}
+	return stores{rules: st, events: st, breakers: st, ready: ready}, func() { _ = db.Close() }, nil
 }

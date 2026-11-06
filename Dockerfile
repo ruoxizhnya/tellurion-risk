@@ -21,7 +21,7 @@ RUN go build -trimpath \
 FROM alpine:3.19
 
 WORKDIR /app
-RUN apk add --no-cache ca-certificates netcat-openbsd tzdata && \
+RUN apk add --no-cache ca-certificates tzdata && \
     cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
     echo "Asia/Shanghai" > /etc/timezone && \
     rm -rf /var/cache/apk/*
@@ -29,9 +29,9 @@ RUN apk add --no-cache ca-certificates netcat-openbsd tzdata && \
 COPY --from=builder /out/risk-service /app/risk-service
 
 EXPOSE 8089
-# 本仓今天没有公开 /healthz；G0 用 TCP 探针，公开健康端点归 G1。
+# 公开健康端点（G1）：HTTP 探针证明进程能应答，不只是端口在听。
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD nc -z 127.0.0.1 8089 || exit 1
+    CMD wget -qO- http://127.0.0.1:8089/healthz >/dev/null || exit 1
 
 USER nobody
 ENTRYPOINT ["/app/risk-service"]

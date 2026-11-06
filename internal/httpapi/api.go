@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -23,12 +24,19 @@ type Server struct {
 	events     *event.Service
 	breakers   *breaker.Service
 	authorizer Authorizer
+	readiness  func(context.Context) error
+	limiter    *rateLimiter
 	mux        *http.ServeMux
 }
 
-// Option 按需装配可选服务（事件 / 熔断）与鉴权闸；事件 / 熔断不装配则不注册路由，
-// 鉴权闸不装配则一律拒绝服务（fail-closed）。
+// Option 按需装配可选服务（事件 / 熔断）、鉴权闸、就绪检查与限流。
+// 事件 / 熔断不装配则不注册路由；鉴权闸不装配则一律拒绝服务（fail-closed）。
 type Option func(*Server)
+
+// WithReadiness 注入就绪检查（G1）。不注入 ⇒ `/readyz` 按「内存档已就绪」返回 200。
+func WithReadiness(check func(context.Context) error) Option {
+	return func(s *Server) { s.readiness = check }
+}
 
 // WithEvents 装配 X3c 事件回传端点。
 func WithEvents(svc *event.Service) Option {
@@ -38,6 +46,18 @@ func WithEvents(svc *event.Service) Option {
 // WithBreakers 装配 X3d 熔断指令端点。
 func WithBreakers(svc *breaker.Service) Option {
 	return func(s *Server) { s.breakers = svc }
+}
+
+// WithRateLimit 覆盖默认限流（每秒 perSecond 个令牌、突发 burst）。
+// perSecond <= 0 或 burst <= 0 ⇒ 关闭限流（仅测试用）。
+func WithRateLimit(perSecond float64, burst int) Option {
+	return func(s *Server) {
+		if perSecond <= 0 || burst <= 0 {
+			s.limiter = nil
+			return
+		}
+		s.limiter = newRateLimiter(perSecond, float64(burst))
+	}
 }
 
 // routeSpec 是「注册模式 + handler」。路由表与 policy 表由守卫测试双向对拍，
@@ -87,12 +107,15 @@ func (s *Server) routePatterns() []string {
 	return out
 }
 
-// New 构造 Server 并注册路由。每个路由都挂 requireAuth（未装配 Authorizer → 503）。
+// New 构造 Server 并注册路由。业务路由都挂 requireAuth（未装配 Authorizer → 503）；
+// `/healthz` 与 `/readyz` 是公开探针（G1），不鉴权、不限流。
 func New(svc *rule.Service, opts ...Option) *Server {
-	s := &Server{svc: svc, mux: http.NewServeMux()}
+	s := &Server{svc: svc, mux: http.NewServeMux(), limiter: newRateLimiter(defaultRatePerSecond, defaultRateBurst)}
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.mux.HandleFunc("GET /healthz", s.healthz)
+	s.mux.HandleFunc("GET /readyz", s.readyz)
 	for _, spec := range s.routes() {
 		s.mux.Handle(spec.pattern, s.requireAuth(spec.handler))
 	}

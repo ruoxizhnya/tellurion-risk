@@ -631,7 +631,7 @@ verified-by: QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两�
 > ② **M8 接口对表已落（2026-10-22）** → 本仓 [`ARCHITECTURE.md`](ARCHITECTURE.md) §9（模板 = `tellurion:docs/design/qt-decoupling/data-service-contract-and-ownership.md` §4.1；**本行原指的 `target-module-topology.md` UnifiedDataPoint 节是幻影引用，已订正**）。
 > 正文以 core 彼处为准，此处只留指针、不镜像。
 
-### SVC-RISK-G1 · 服务就绪门 G1：公开健康/就绪端点 · 错误模型闭合 · 版本化（ADR-036）[P0] ⬜
+### SVC-RISK-G1 · 服务就绪门 G1：公开健康/就绪端点 · 错误模型闭合 · 版本化（ADR-036）[P0] 🔶（2026-11-07 代码与文档已落；真实 PG 与 compose 腿未跑）
 
 - **① 目标**：本仓 13 条端点补齐 ADR-036 §3 的 G1 五件，并关掉台账里那条**已写明却无人执行的承诺**。
 - **② 上下文**：台账 `:67` 原文「**公开健康 / 就绪端点（`/healthz`、`/readyz`）：本仓今天没有，探针是 TCP；G1 补**」——而此前**不存在 G1 单**（实测本文件此前只有 `SVC-RISK-G0` 与 `SVC-RISK-G3`）；实测 `internal/httpapi` 与 `cmd/riskservice` 里 `healthz` / `health` **0 命中**，`deploy/compose.yaml:20-23` 的健康检查是 `nc -z 127.0.0.1 8089`（TCP，只能证明端口在听，证明不了规则库可用）。已落的一半：鉴权完整（`policy.go` 策略表 + kit `auth/httpadapter`，全端点 fail-closed；`service` 角色只开 `POST /api/risk/resolve` 与 `POST /api/risk/events` 两条，ADR-0006）；分页在 `rules` 与 `audit` 两条读面上部分已有。**未落**：版本化兼容策略、错误码闭合表、限流、幂等键口径（`breakers` 有幂等键、`events` 有去重键，但两者的「重复请求返回什么」未成文）。
@@ -639,6 +639,17 @@ verified-by: QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两�
 - **④ 约束与非目标**：不扩 `service` 角色的档位（`/audit` 与规则管理面**不开**，ADR-0006 已裁）；不改裁决语义（`CheckOrder` 永不在本仓，ADR-036 §6 第 2 条）；不做多租户/RBAC；不引新依赖（kit 已 `v0.1.4`）。
 - **⑤ 验收**：① `/healthz` 200 无需 token、`/readyz` 在 PG 断开时 503、恢复后 200（三条用例）；② `compose` 的 healthcheck 已换成 HTTP 探针且 `docker compose up --wait` 到 healthy；③ 错误码表逐条对得上实现（抽 3 条）；④ 幂等两条用例：同键重复 `breakers` ⇒ 预期码、同去重键重复 `events` ⇒ 预期 `duplicates`；⑤ 429 与 401 用例可区分且探针豁免；⑥ 三条命令单仓绿。
 - **⑥ 边界**：本仓接口面；core 侧的 `bundle → RiskPolicy` 接线归 `tellurion:SVC-CORE-RISK-RETIRE`，`events_enabled` 出厂值与凭证分发归 `tellurion:QT-77`。
+
+> **施工记录（2026-11-07）**：
+> - **① 健康面**：`internal/httpapi` 新增公开 `GET /healthz`（只证进程活，不读库、不看鉴权配置）与 `GET /readyz`（注入的 readiness：PG 可连 + `risk.rule_defs` 已存在；不注入 = 内存档，响应带 `store:"memory"`）；两者**不鉴权、不限流**。`cmd/riskservice` 的 PG 档在 `openStores` 注入 readiness；Dockerfile 与 `deploy/compose.yaml` 的探针从 `nc -z` 换成 `wget -qO- http://127.0.0.1:8089/healthz`（Alpine busybox），并移除不再需要的 `netcat-openbsd`。
+> - **② 启动边界**：连接 + 迁移共用一个超时，旋钮 `RISK_DB_TIMEOUT`（默认 15s，非法值告警后回落）；迁移仍只走 `pgstore.Migrate`，单副本执行（多副本前须加 advisory lock，已写进 api-schema §1 治理说明）。
+> - **③ 错误码闭合表**：`api-schema.md` §1 新增 `code → HTTP → 领域哨兵` 全表（`classify` 是唯一实现）；`TestClassifyMatchesDocumentedTable` 抽 3 条对拍（`rule_not_found` 404 / `idempotency_conflict` 409 / `revision_conflict` 409）。
+> - **④ 幂等语义写死**（均已有既有用例，本轮只成文不改实现）：`POST /rules` 同 id 同内容 200、不同内容 409；`POST /breakers` 同键同载荷 200 `applied:false`、不同载荷 409；`POST /events` 重复行计入 `duplicates`、整批仍 200。
+> - **⑤ 分页**：统一策略 = **整段返回 + 声明上界**（`rules` 全量并按 scope/active 收窄；`audit` 必须按 rule_id；`monitor/*` 必须给时间窗），本轮不引 cursor；写进 api-schema §1，并写明「将来引 cursor 必须四端同批 + 升 MINOR」。
+> - **⑥ 限流**：按身份（`username`→`subject`→`open-access`）令牌桶，默认 50 rps / 突发 200，无新依赖；超限 `429` + `code:"rate_limited"` + `Retry-After`；**鉴权失败先于限流**，`401/403` 不会被 429 顶替；探针豁免。
+> - **验收（真实输出）**：`gofmt -l .` 空输出 / `BUILD_EXIT=0` / `VET_EXIT=0` / `TEST_EXIT=0`（6 个包全 ok）；**真实二进制 smoke**（内存档、`127.0.0.1:18089`）：`/healthz` → 200 `{"status":"ok"}`、`/readyz` → 200 `{"status":"ready"}`、`/api/risk/rules` → 200 `{"rules":[],"count":0}`；临时 exe 已清理。
+> - **破坏验证（三条，均红后逐行还原复绿）**：① 关掉限流判定 → 第二次请求 200（want 429）；② `readyz` 恒 200 → down 场景 200（want 503）；③ `rule_not_found` 改 400 → 错误码对拍红。
+> - **未执行（如实，不写成已完成）**：⑤①「真实 PG 断开 → 恢复」与 ⑤②「`docker compose up --wait` 到 healthy」**未跑**——本机 Docker 引擎未起、`127.0.0.1:5445` 无监听；`/readyz` 的 PG 分支只由注入式用例覆盖，compose 探针只改了文本未实际拉起。据此本单记 🔶 而非 ✅。补齐条件：起临时 PG（约定端口 5445、容器名带 `tellurion-risk` 前缀）后跑 `compose up --wait` + 断连/恢复三态。
 
 ### SVC-RISK-G2 · 服务就绪门 G2：`risk.*` 唯一 writer 与可重放迁移（ADR-036）[P0] ⬜
 

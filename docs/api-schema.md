@@ -1,13 +1,13 @@
 ---
 status: active
-last-verified: 2026-10-26
-verified-by: QT-74 规则参数字典落对外输入口径（§1.1，与 db-schema §7 同名同序）
+last-verified: 2026-11-07
+verified-by: G1 施工 —— `/healthz` `/readyz`、限流（429 与 401 可区分、探针豁免）、错误码闭合表、幂等语义与分页/版本策略写入 §1；真实 PG 就绪与 compose --wait 未跑
 ---
 
 # API Schema — tellurion-risk
 
-> **实现状态（2026-10-25）**：**规则管理 4 端点 + 快照 3 端点 + 审计读 1 端点 + 事件回传 1 端点 +
-> 熔断 1 端点 + 监控 3 端点已落地，且全部过鉴权闸**
+> **实现状态（2026-10-25，2026-11-07 补 G1）**：**规则管理 4 端点 + 快照 3 端点 + 审计读 1 端点 + 事件回传 1 端点 +
+> 熔断 1 端点 + 监控 3 端点已落地，且全部过鉴权闸**；**公开探针 `/healthz` / `/readyz` 与按身份限流已落（G1，2026-11-07）**
 > （`POST /rules`、`PUT /rules/{id}`、`POST /rules/{id}/approve`、`GET /rules`、`POST /resolve`、
 > `GET /snapshots/{hash}`、`GET /snapshots/{hash}/bundle`、`GET /audit`、`POST /events`、`POST /breakers`、
 > `GET /monitor/exposure`、`GET /monitor/alerts`、`POST /monitor/evaluate`）。
@@ -44,6 +44,51 @@ verified-by: QT-74 规则参数字典落对外输入口径（§1.1，与 db-sche
 > **请求 / 响应形状**：本文只冻结**路径、错误码、幂等与兼容**；逐端点的目标签名、DTO 字段与版本策略见 `ARCHITECTURE.md` §9（M8 接口对表），两处必须同步改，不复制形状。
 
 ## 1. 接口面
+
+### 服务探针与请求治理（G1）—— ✅ 已实现（2026-11-07，真实 PG / compose 腿未跑）
+
+| 方法 | 路径 | 用途 | 鉴权 |
+|---|---|---|---|
+| GET | `/healthz` | 进程存活（不读库、不看鉴权配置） | 无（公开） |
+| GET | `/readyz` | 就绪：PG 可连 + `rule.Migrations()` 已执行（不注入检查 = 内存档，标注 `store:"memory"`） | 无（公开） |
+
+> **探针不鉴权、不限流**：否则「鉴权配置坏了」会被读成「进程死了」，或反向把探针限流读成未登录
+> （core 侧 AUD-57 的同型坑）。
+
+**限流**：按调用方身份（`username` → `subject` → `open-access` 共用一桶）令牌桶，默认 **50 rps / 突发 200**，
+不引新依赖。超限 = `429` + `code:"rate_limited"` + `Retry-After`；**鉴权失败先于限流**，因此 `401` / `403`
+永远不会被 429 顶替。
+
+**错误码闭合表**（`internal/httpapi/api.go` 的 `classify` 是唯一实现，`TestClassifyMatchesDocumentedTable` 抽 3 条对拍）：
+
+| code | HTTP | 领域哨兵 |
+|---|---|---|
+| `rule_not_found` | 404 | `rule.ErrRuleNotFound` |
+| `revision_not_found` | 404 | `rule.ErrRevisionNotFound` |
+| `revision_conflict` | 409 | `rule.ErrRevisionConflict` |
+| `revision_not_draft` | 409 | `rule.ErrRevisionNotDraft` |
+| `idempotency_conflict` | 409 | `rule.ErrIdempotencyConflict` / `breaker.ErrIdempotencyConflict` |
+| `invalid_rule_type` | 400 | `rule.ErrInvalidRuleType` |
+| `invalid_params` | 400 | `rule.ErrInvalidScope` / `rule.ErrInvalidParams` / breaker 三个入参哨兵 |
+| `snapshot_not_found` | 404 | `rule.ErrSnapshotNotFound` |
+| `no_approved_rules` | 404 | `rule.ErrNoApprovedRules` |
+| `internal` | 500 | `rule.ErrSnapshotMismatch` 及其余未识别错误（内容寻址被破坏是服务端事故，细节不外吐） |
+| `unauthenticated` / `forbidden` | 401 / 403 | 鉴权闸（非领域错误） |
+| `auth_unavailable` | 503 | 未装配 `Authorizer`（fail-closed） |
+| `rate_limited` | 429 | 限流（非领域错误） |
+
+**幂等语义（写死，各有用例）**：
+- `POST /rules`：同 `rule_id` + 同内容 ⇒ **200** 返回既有 head（`created=false`）；同 `rule_id` 不同内容 ⇒ **409 `idempotency_conflict`**。
+- `POST /breakers`：同 `breaker_id` + 同载荷（action + scope + reason）⇒ **200** `applied:false`；同键不同载荷 ⇒ **409 `idempotency_conflict`**。
+- `POST /events`：按 `(run_id, order_id, event_seq)` 去重，重复行计入响应的 `duplicates`，整批仍 **200**（部分成功语义）——**不**用 409，因为重放整批是正常重试路径。
+
+**分页（统一策略：整段返回 + 声明上界，本轮不引 cursor）**：四条读面 —— `GET /rules`、`GET /audit`、
+`GET /monitor/exposure`、`GET /monitor/alerts` —— **都整段返回**并在响应里带 `count`（monitor 另有窗口参数）。
+上界声明：`rules` 为自托管量级全量（>1000 条请用 `scope` / `active` 收窄）；`audit` 必须按 `rule_id` 定向；
+`monitor/*` 必须给时间窗。将来引入 cursor 必须四端点**同批**改并升 MINOR。
+
+**版本策略**：`/api/risk` 即 v1（路径不写 `/v1`）。**MINOR**（加可选字段 / 加端点）= 不改路径、旧客户端不感知；
+**MAJOR**（删字段、改语义、改错误码含义）= 新路径段 `/api/risk/v2` + 双写窗口，**禁止同路径改语义**。
 
 ### 规则管理（写侧，人 / 审批）—— ✅ 已实现（2026-10-23）
 

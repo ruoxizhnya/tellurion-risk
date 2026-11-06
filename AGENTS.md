@@ -30,8 +30,15 @@ core 侧消费接线**拆两半读**（2026-10-25 订正）：✅ `risk_rules_ha
 告警生产侧接线同日落地：core 的 6 个检测器 + `Fire` 进来的对账 / 双跑差异按 `POST /api/risk/events`
 回传（`verdict:"alert"`），所以 `monitor/alerts` / `evaluate` 不再是结构性空集 —— 但生产侧开关
 `risk_service.events_enabled` **默认关**，关着的部署里空集是设定。
-`POST /events` 今天**不写审计行**：`actorOf` 只作用于规则 create/update/approve 三处，`risk.risk_events`
-也没有 actor 列（票面上「actor 取自 claims」说的是 `risk.audit_logs`，不是事件回传）。
+`POST /events` 今天**不写审计行**（`risk.audit_logs` 的 `action` 枚举只允许规则动作），但事件自身的
+调用方身份已落 `risk.risk_events.actor`（QT-80，2026-11-07：取自鉴权 claims，服务 token 落 `sub`；
+请求体自报的 `actor` 不生效）。
+
+**服务探针与请求治理（G1，2026-11-07）**：`GET /healthz`（进程存活，不读库）/ `GET /readyz`
+（PG 可连 + `rule.Migrations()` 已执行；未注入检查 = 内存档，响应标 `store:"memory"`）两条**公开**端点，
+不鉴权、不限流；业务端点按调用方身份（`username` → `subject` → `open-access` 共用一桶）令牌桶限流
+（默认 50 rps / 突发 200），**鉴权先于限流**（401/403 不会被 429 顶替），超限 `429 rate_limited` + `Retry-After`。
+真实 PG 断开/恢复与 `compose up --wait` 两条腿**未执行**（本机 Docker 引擎未起），单子记 🔶。
 
 **留在 core 的实现**：`core:pkg/risk`（`RiskManager` / `RegimeDetector` / `StopLossChecker` / `CheckOrder`）+ `core:pkg/compliance`（异常交易 / 减持 / 大额报送）+ `core:pkg/alert`（**6 个检测器 + 进程内 `alertLoop`**）。
 **U7 已裁（2026-10-24）**：告警的**通道编排与报送**归本仓（`monitor/exposure` / `alerts` / `evaluate` 三端点）；**检测器不搬出 core**——逐 bar / 逐笔裁决仍在本进程内，禁止远程调用。

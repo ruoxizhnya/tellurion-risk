@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/ruoxizhnya/tellurion-kit/auth"
 	kithttp "github.com/ruoxizhnya/tellurion-kit/auth/httpadapter"
@@ -91,6 +92,14 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		principal, err := s.authorizer.Authorize(r)
 		switch {
 		case err == nil:
+			if s.limiter != nil && !s.limiter.allow(rateKey(principal), time.Now()) {
+				w.Header().Set("Retry-After", "1")
+				writeJSON(w, http.StatusTooManyRequests, errorBody{
+					Error: "rate limit exceeded",
+					Code:  "rate_limited",
+				})
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, principal)))
 		case errors.Is(err, ErrUnauthenticated):
 			writeJSON(w, http.StatusUnauthorized, errorBody{Error: "authentication required", Code: "unauthenticated"})
