@@ -258,6 +258,16 @@ func updateRule(ctx context.Context, q querier, def rule.Definition, rev rule.Re
 	if err := updateDefinition(ctx, q, def); err != nil {
 		return err
 	}
+	// 已存在的 revision 走状态覆盖（审批跃迁），只有新 revision 才插入。
+	// 无条件 INSERT 会让 approve 在它自己刚 PutRevision 过的同一行上撞主键：
+	// 2026-11-07 对真 PG 实测 `POST /rules/{id}/approve` 恒 409 revision_conflict
+	// （draft→approved 的 UPDATE 成功，approved→active 的 INSERT 撞 rule_revisions_pkey）。
+	// Memory 的 UpdateRule 本来就是覆盖写，两种实现必须同语义。
+	if err := putRevision(ctx, q, rev); err == nil {
+		return nil
+	} else if !errors.Is(err, rule.ErrRevisionNotFound) {
+		return err
+	}
 	return insertRevision(ctx, q, rev)
 }
 

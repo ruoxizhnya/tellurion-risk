@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-11-07
-verified-by: QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两条用例 + 破坏验证 + 真 PG 两条集成腿，2026-11-07 补齐后 ✅）；SVC-RISK-G4 施工（2026-11-07）—— 失败语义五类 / 超时重试口径 / monitor `configured` 判别位 / runbook / 本仓侧停服演练，core 侧演练未执行记 🔶；此前 SVC-RISK-G0 完成（Dockerfile + deploy/compose + 默认 8089 与 TCP 探针）；QT-74 前两步已落，迁 contracts / core 消费未做
+verified-by: QT-42 补丁 —— PG Store 审批跃迁修复（`updateRule` 先覆盖后插入）+ 首条真 PG 回归腿 `internal/pgstore/approve_pg_test.go`（2026-11-07，破坏验证真做真还原）；QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两条用例 + 破坏验证 + 真 PG 两条集成腿，2026-11-07 补齐后 ✅）；SVC-RISK-G4 施工（2026-11-07）—— 失败语义五类 / 超时重试口径 / monitor `configured` 判别位 / runbook / 本仓侧停服演练，core 侧演练未执行记 🔶；此前 SVC-RISK-G0 完成（Dockerfile + deploy/compose + 默认 8089 与 TCP 探针）；QT-74 前两步已落，迁 contracts / core 消费未做
 ---
 
 # TASKS — tellurion-risk 未完成项
@@ -502,6 +502,36 @@ verified-by: QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两�
 > 7. **真实进程端到端腿**：「core 真进程 → risk 真进程 → `service` token 调 resolve/events」这条
 >    **仍未跑过**——本单只在 `httptest` 层用真 kit `TokenService` 自证（无部署清单、无 token 分发面），
 >    且上面第 4 条的 subject 缺口**先**要解决，否则这条腿连 200 都到不了。
+
+> **施工记录（2026-11-07 · PG Store 审批跃迁修复 + 首条真 PG 回归腿）**
+>
+> **发现路径**：core 仓 QT-77 的服务间凭证真跑演练（真 PG `55432` + 真 risk 进程）首次调用
+> `POST /api/risk/rules/{id}/approve` 恒返回 **409 `revision_conflict`**；现场查库确认 `draft→approved`
+> 的 `PutRevision` UPDATE 已成功，`approved→active` 之后 `UpdateRule` 里的 `insertRevision` 撞
+> `rule_revisions_pkey`（同一 revision 第二次插入）。
+>
+> **根因**：`internal/pgstore/pgstore.go` 的 `updateRule` 对 revision 无条件 `INSERT`；Memory 的
+> `UpdateRule` 是覆盖写，所以 `internal/rule` 的单测（Memory）全绿，PG 腿直到真跑 HTTP 才暴露。
+> `Update`（新 revision）与 `Approve`（同一 revision 换状态）本是两种语义，实现里被合并成「插入」。
+>
+> **修法（最小）**：`updateRule` 先 `putRevision` 覆盖；仅当返回 `ErrRevisionNotFound`（即这是新
+> revision）才 `insertRevision`；其余错误（含版本内容不符的 `ErrRevisionConflict`）原样上抛，不静默覆盖。
+>
+> **回归腿**：新增 `internal/pgstore/approve_pg_test.go`，`TELLURION_RISK_TEST_DSN` 未设时 skip；
+> 对真 PG 走 `Migrate → Create → Approve`，断言 revision 与 definition 都到 `active`。
+>
+> **验收（真实输出，2026-11-07）**：
+> - `TELLURION_RISK_TEST_DSN=postgres://postgres@127.0.0.1:55432/tellurion_risk_test?sslmode=disable go test ./internal/pgstore -run TestApprovePromotesRevisionOnRealPG -v -count=1` → PASS（EXIT=0）。
+> - **破坏验证**：把 `updateRule` 还原成无条件 `insertRevision` ⇒ 同一用例红，报
+>   `Approve on PG: revision_conflict: rule_revisions_pkey`（与 HTTP 409 同源）；逐字节还原后复跑 PASS，
+>   `pgstore.go` SHA256 改前改后同为 `92F01C13666BA9F072582888A75FCB651367FBF629F0F5A62DC64FA2185C234A`。
+> - **真服务复验**：risk `127.0.0.1:18093`（PG `55432`）`POST /api/risk/rules` → **201**，
+>   `POST /api/risk/rules/r-sl2/approve {"revision":1}` → **200** `status=active`，随后
+>   `POST /api/risk/resolve` 带 service token → **200**。
+> - **门禁**：`go build ./...` / `go vet ./...` / `go test ./... -count=1` 全 0；`gofmt -l .` 空。
+>
+> **未落（如实登记）**：PG 侧仍无共享集成套件（本用例是第一条真 PG 腿）；`internal/rule` 的 Memory
+> 单测覆盖不到这条差异，后续新增 Store 实现时须同样跑 `TELLURION_RISK_TEST_DSN`。
 
 ---
 
