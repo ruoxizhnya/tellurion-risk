@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -78,7 +79,15 @@ func TestQueryEvents_Integration(t *testing.T) {
 	if got[0].OrderID != "o-2" || got[1].OrderID != "o-1" {
 		t.Fatalf("rows must be event_ts DESC: %+v", got)
 	}
-	if string(got[1].Payload) != `{"rule":"drawdown","severity":"warning","message":"dd"}` {
+	// payload 列是 JSONB：键序会被规范化，不能按原文字节比较；按 JSON 语义比较。
+	var wantPayload, gotPayload map[string]any
+	if err := json.Unmarshal([]byte(`{"rule":"drawdown","severity":"warning","message":"dd"}`), &wantPayload); err != nil {
+		t.Fatalf("unmarshal want payload: %v", err)
+	}
+	if err := json.Unmarshal(got[1].Payload, &gotPayload); err != nil {
+		t.Fatalf("unmarshal got payload: %v", err)
+	}
+	if !reflect.DeepEqual(gotPayload, wantPayload) {
 		t.Fatalf("payload round-trip = %s", got[1].Payload)
 	}
 

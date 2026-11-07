@@ -651,7 +651,13 @@ verified-by: QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两�
 > - **破坏验证（三条，均红后逐行还原复绿）**：① 关掉限流判定 → 第二次请求 200（want 429）；② `readyz` 恒 200 → down 场景 200（want 503）；③ `rule_not_found` 改 400 → 错误码对拍红。
 > - **未执行（如实，不写成已完成）**：⑤①「真实 PG 断开 → 恢复」与 ⑤②「`docker compose up --wait` 到 healthy」**未跑**——本机 Docker 引擎未起、`127.0.0.1:5445` 无监听；`/readyz` 的 PG 分支只由注入式用例覆盖，compose 探针只改了文本未实际拉起。据此本单记 🔶 而非 ✅。补齐条件：起临时 PG（约定端口 5445、容器名带 `tellurion-risk` 前缀）后跑 `compose up --wait` + 断连/恢复三态。
 
-### SVC-RISK-G2 · 服务就绪门 G2：`risk.*` 唯一 writer 与可重放迁移（ADR-036）[P0] 🔶（2026-11-07 施工；真 PG 重放腿未执行）
+### SVC-RISK-G2 · 服务就绪门 G2：`risk.*` 唯一 writer 与可重放迁移（ADR-036）[P0] ✅（2026-11-07 真库重放腿补跑通过）
+
+> **2026-11-07 真库腿补跑（✅）**：便携 PostgreSQL 16.2 @ `127.0.0.1:55432`；
+> `RISK_TEST_DSN='postgres://postgres@127.0.0.1:55432/tellurion_risk_test?sslmode=disable' go test ./internal/pgstore -run 'TestMigrationReplay_Integration|TestQueryEvents_Integration' -v -count=1`
+> → 两条 `--- PASS`，重放指纹 `rows=7a3dfc5a5281cb76…` / `indexes=65c95b0b7fe2dde6…` / `columns=e60fe69414d3914b…`（同一用例内两次采集比对），退出码 0。
+> 同轮修正一条**真库才暴露的测试缺陷**：`risk_events.payload` 是 JSONB，键序会被规范化，原断言按原文字节比 → 改为 JSON 语义比较（`internal/pgstore/monitor_test.go`，仅测试，不改生产口径）。
+> 同一 DSN 下 `go test ./... -count=1` 退出码 0；⑤①~⑤⑤ 均已有真实输出（④ 的双 owner 行见 `docs/design/qt-decoupling/dual-owner-inventory-2026-11-07.md`）。
 
 - **① 目标**：`risk.*` 五族表（规则 / 版本 / 审批 / 审计 / `risk_events` / 熔断 + `limits`）在本仓自证「只有我写、迁移可重放」，并把「裁决权双真相」这条非表形态的缺口登记清楚。
 - **② 上下文**：`internal/pgstore` 在 `cmd/riskservice` 启动时执行 `rule.Migrations()`（幂等 DDL），读-改-写经 `Store.Tx`（PG 行锁）；`risk.limits` 今天仍是**空壳**（本仓台账 `:564` 自证「`risk.limits` 若要端点则另立单」）；ADR-036 §5 的数据归属矩阵把 risk 这一行写成「规则快照已住 `risk.*`，但 `bundle → RiskPolicy` 未接，进程内限额仍来自 core 配置」⇒ **G2 对 risk 不只是表，还包括「限额真相是否唯一」**（这是六仓里唯一有此形态的仓）；`risk.audit_logs`（人操作审计）与 core 的 `audit.message_log`（消息重放）**不是一回事**，护栏别把它们当一个。
