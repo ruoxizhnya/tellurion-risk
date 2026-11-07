@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-11-07
-verified-by: QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两条用例 + 破坏验证），PG 集成腿未执行记 🔶；SVC-RISK-G4 施工（2026-11-07）—— 失败语义五类 / 超时重试口径 / monitor `configured` 判别位 / runbook / 本仓侧停服演练，core 侧演练未执行记 🔶；此前 SVC-RISK-G0 完成（Dockerfile + deploy/compose + 默认 8089 与 TCP 探针）；QT-74 前两步已落，迁 contracts / core 消费未做
+verified-by: QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两条用例 + 破坏验证 + 真 PG 两条集成腿，2026-11-07 补齐后 ✅）；SVC-RISK-G4 施工（2026-11-07）—— 失败语义五类 / 超时重试口径 / monitor `configured` 判别位 / runbook / 本仓侧停服演练，core 侧演练未执行记 🔶；此前 SVC-RISK-G0 完成（Dockerfile + deploy/compose + 默认 8089 与 TCP 探针）；QT-74 前两步已落，迁 contracts / core 消费未做
 ---
 
 # TASKS — tellurion-risk 未完成项
@@ -675,7 +675,7 @@ verified-by: QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两�
 > - **破坏验证（真做真还原）**：在 `internal/rule/ddl.go` 的 `migrationStatements` 临时插入一行 `` `INSERT INTO public.audit_logs (id) VALUES ('x')` ``（第 10 行）⇒ `TestNoCrossSchemaWrites` **FAIL**：`internal\rule\ddl.go:10 writes to foreign schema "public": INSERT INTO public.audit_logs (id) VALUES ('x')`（`DESTROY_EXIT=1`）。用备份逐字节还原后 `SHA256_BEFORE = SHA256_AFTER = CFF8ABCA6503163C8E4173F4063868556C2E125516EEF897BCF81B3F9DBF08AD`，复跑同用例 `PASS`（`RESTORE_TEST_EXIT=0`）。
 > - **未执行（如实，不写成已完成）**：⑤①「真实 PG 上连跑两次 `rule.Migrations()` 指纹不变」**未跑**——本机无 PostgreSQL（`127.0.0.1:5432` 无监听）、Docker 引擎不可用；该腿只在 `RISK_TEST_DSN` 非空时执行，本轮 `go test` 里为 `--- SKIP: TestMigrationReplay_Integration (RISK_TEST_DSN not set)`，**不是假绿**。据此本单记 🔶。补齐条件：起临时 PG（容器名带 `tellurion-risk` 前缀）后跑 `RISK_TEST_DSN='postgres://...' go test ./internal/pgstore -run TestMigrationReplay -count=1 -v`。
 
-### QT-80 · 风险事件行带调用方身份（`risk_events.actor` + 写审计）[P1] 🔶（2026-11-07 代码已落；PG 集成腿未执行）
+### QT-80 · 风险事件行带调用方身份（`risk_events.actor` + 写审计）[P1] ✅（2026-11-07）
 
 - **① 目标**：让 `POST /api/risk/events` 收进来的每一条事件能回答「谁触发的」，并把这条变更作为 DDL 单独立执行。
 - **② 上下文**：来源是本仓台账 `:422` 那句「要让事件带调用方身份 = 加列 + 加审计写（DDL 变更，**另立单**），不在本票范围」——那张单此前不存在；现状实测：`actor` 取自鉴权 claims 只作用于**规则 create/update/approve 三处**（ADR-0005），`POST /events` 今天**不写审计行**，`risk.risk_events` **没有 actor 列**；core 侧告警回传的 `verdict:"alert"` 事件（`tellurion:cmd/analysis/wiring/risk_events.go`）带的是 service 身份（`sub=service:core`），所以「actor」的取值域必须先定（服务名？还是事件里透传的原始触发者？）。
@@ -691,7 +691,14 @@ verified-by: QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两�
 > - **验收（真实输出）**：`gofmt -l .` 空输出、`go build ./...` / `go vet ./...` / `go test ./... -count=1` 全绿（6 个包 `ok`）。
 > - **用例**：`event.TestIngest_RecordsCallerActor`；`httpapi.TestEvents_RECORDActorFromClaimsNotBody` 三条（`service-token-sub` → `service:core`、`user-username` → `alice`、`open-access` → `open-access`，且请求体里伪造的 `"actor":"forged"` 不生效）。
 > - **破坏验证**：把 `ingestEvents` 的 `actorOf(r)` 换成常量 `"open-access"` → 两条子用例红（`DESTROY_EXIT=1`，报文 `actor = "open-access", want "service:core"`）；还原后复绿。
-> - **未执行（如实）**：⑤②「老行 `actor IS NULL` 且读面不报错」、⑤③「迁移连跑两次指纹不变」需要真 PG——本机无库（`127.0.0.1:5445` 无监听、Docker 引擎未起），本轮**未跑**；用例侧仅由 DDL 文本与 `COALESCE` 保证，故本单记 🔶 不标 ✅。补齐条件：起临时 PG（约定端口 5445、容器名带 `tellurion-risk` 前缀）后跑 `Migrations()` 两遍 + 插老行读回。
+> - **未执行（当日早先状态，已被下方真库记录替代）**：⑤②「老行 `actor IS NULL` 且读面不报错」、⑤③「迁移连跑两次指纹不变」需要真 PG——本机当时无库（`127.0.0.1:5445` 无监听、Docker 引擎未起），那一轮**未跑**，当时记 🔶。补齐条件：起临时 PG 后跑 `Migrations()` 两遍 + 插老行读回。
+>
+> **施工记录（2026-11-07 晚，真 PG 补齐 ⑤②/⑤③；本单翻 ✅）**
+> - **库**：便携 PostgreSQL 16.2 @ `127.0.0.1:55432`，库 `tellurion_risk_test`（`postgres://postgres@127.0.0.1:55432/tellurion_risk_test?sslmode=disable`）。
+> - **⑤② 真库腿**：新增 `internal/pgstore/actor_pg_test.go` 的 `TestLegacyActorNullRow_Integration`：建表迁移后**直接插一条 `actor=NULL` 的老行**（显式列 11 个、`payload=NULL`），再用 `pgstore.New(db).QueryEvents(ctx, event.Query{RunID: ...})` 读回，断言**不报错、取到 1 条、`Actor == ""`**（`COALESCE(actor,'')` 生效）。跑：`RISK_TEST_DSN=... go test ./internal/pgstore -run TestLegacyActorNullRow -v -count=1` → `--- PASS: TestLegacyActorNullRow_Integration (0.05s)`，`EXIT=0`。用例自清理（`t.Cleanup` 按 `run_id` 删除），不污染库。
+> - **⑤③ 真库腿**：同库跑 `TestMigrationReplay_Integration`（`Migrate` 连跑两次 + 表行数 / `pg_indexes` 定义 / `information_schema.columns` 三组指纹）→ `--- PASS: TestMigrationReplay_Integration (0.07s)`，日志三指纹：`rows=5989758fa0044f1173432a5ccf24f88086c9161acef43e468440e813373528bb`、`indexes=65c95b0b7fe2dde6ba482b7388f2669a64202afb61cb2cdbc08f7512d2a3d529`、`columns=e60fe69414d3914b6c2ca3ec4123de0140b062ac69e7bd5ca91724647ab75075`，两次一致。
+> - **门禁**：`gofmt -l .` 空输出（`gofmt -w` 该新文件后复核）、两用例同批 `EXIT=0`；未加依赖、未改生产代码。
+> - **判定**：⑤① 两条用例、⑤② 老行可读、⑤③ 重放指纹、⑤④ 文档同步（先前已落）、⑤⑤ 三条命令绿 —— 五条全部有当前证据，**本单翻 ✅**。
 
 ### SVC-RISK-G4 · 服务就绪门 G4：开关默认值 · 回传失败语义 · runbook（ADR-036）[P1] 🔶
 
