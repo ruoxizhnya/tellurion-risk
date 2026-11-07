@@ -29,7 +29,7 @@ func (s *Server) monitorExposure(w http.ResponseWriter, r *http.Request) {
 		writeMonitorError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, report)
+	writeJSON(w, http.StatusOK, exposureBody{ExposureReport: report, Configured: s.eventIngestConfigured})
 }
 
 // monitorAlerts 返回窗口内的告警列表（verdict=alert 的事件投影）。
@@ -57,7 +57,7 @@ func (s *Server) monitorAlerts(w http.ResponseWriter, r *http.Request) {
 		writeMonitorError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, report)
+	writeJSON(w, http.StatusOK, alertBody{AlertReport: report, Configured: s.eventIngestConfigured})
 }
 
 type evaluateRequest struct {
@@ -100,7 +100,32 @@ func (s *Server) monitorEvaluate(w http.ResponseWriter, r *http.Request) {
 		writeMonitorError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, report)
+	writeJSON(w, http.StatusOK, evaluationBody{EvaluationReport: report, Configured: s.eventIngestConfigured})
+}
+
+// 监控响应 DTO（G4）：在领域报告外**加**一个判别位 `configured`（MINOR，旧读者不感知）。
+//
+// 空集有两种含义，必须可判别：
+//   - `configured:false` ⇒ 本部署**未声明接入**事件回传（core `events_enabled=false`
+//     或从未接通）。空集是「未接入」，不是「没触发」。
+//   - `configured:true` + 空列表 ⇒ 已声明接入，但窗口内确实没有事件/告警（没触发）。
+//
+// 本仓看不到 core 的开关，因此该值来自部署声明（`cmd/riskservice` 的
+// `RISK_EVENTS_EXPECTED`），不是探测；声明与 core 实际开关不符属于部署错误，
+// 核对步骤见 `docs/runbook.md` §5。
+type exposureBody struct {
+	event.ExposureReport
+	Configured bool `json:"configured"`
+}
+
+type alertBody struct {
+	event.AlertReport
+	Configured bool `json:"configured"`
+}
+
+type evaluationBody struct {
+	event.EvaluationReport
+	Configured bool `json:"configured"`
 }
 
 func parseWindowParams(r *http.Request) (time.Time, time.Time, error) {

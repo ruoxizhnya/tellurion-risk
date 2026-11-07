@@ -27,6 +27,10 @@ type Server struct {
 	readiness  func(context.Context) error
 	limiter    *rateLimiter
 	mux        *http.ServeMux
+	// eventIngestConfigured 是本部署对「上游 core 已打开事件回传并接入本仓」的
+	// **声明**（G4）。本仓看不见 core 的 `risk_service.events_enabled`，所以它不是
+	// 探测值；monitor 响应原样回显它，用来区分「空集 = 未接入」与「空集 = 没触发」。
+	eventIngestConfigured bool
 }
 
 // Option 按需装配可选服务（事件 / 熔断）、鉴权闸、就绪检查与限流。
@@ -41,6 +45,14 @@ func WithReadiness(check func(context.Context) error) Option {
 // WithEvents 装配 X3c 事件回传端点。
 func WithEvents(svc *event.Service) Option {
 	return func(s *Server) { s.events = svc }
+}
+
+// WithEventIngestConfigured 声明上游 core 的事件回传链路已接入（G4，默认 false）。
+// 默认值与 core 出厂 `risk_service.events_enabled=false` 对齐：默认部署下
+// monitor 的空集是「未接入」；只有声明为 true 时，空集才表示「已接入但没触发」。
+// 允许误声明，但**不允许**把两者混为一谈（空集必须可判别）。
+func WithEventIngestConfigured(configured bool) Option {
+	return func(s *Server) { s.eventIngestConfigured = configured }
 }
 
 // WithBreakers 装配 X3d 熔断指令端点。

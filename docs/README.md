@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-23
-verified-by: QT-42 X3a 规则侧实装——文档导航与变更触发表核对
+last-verified: 2026-11-07
+verified-by: G4 施工——文档导航补 runbook（起停 / 审计 / 迁移 / 熔断 / 开关核对）
 ---
 
 # 文档导航 — tellurion-risk
@@ -20,6 +20,7 @@ verified-by: QT-42 X3a 规则侧实装——文档导航与变更触发表核对
 | 加 / 改接口 | [`api-schema.md`](api-schema.md) |
 | 查某个 port / DTO / 端点的签名、错误语义、版本策略 | [`ARCHITECTURE.md`](ARCHITECTURE.md) §9「接口对表」 |
 | 改数据流向或顺序 | [`dataflow.md`](dataflow.md) |
+| 起停 / 看审计 / 重放迁移 / 熔断解除 / 开关核对 | [`runbook.md`](runbook.md) |
 | 想知道"为什么这样设计" | [`adr/`](adr/README.md) |
 | 要做删档 / 迁移 / 流程变更 | [`odr/`](odr/README.md) |
 | 查历史 | [`archive/`](archive/README.md) |
@@ -32,6 +33,7 @@ verified-by: QT-42 X3a 规则侧实装——文档导航与变更触发表核对
 | [`db-schema.md`](db-schema.md) | **表结构唯一真相源** + 所有权声明 | 改表的人 |
 | [`api-schema.md`](api-schema.md) | **对外接口唯一真相源** + 错误码 / 幂等 / 兼容 | 改接口的人 |
 | [`dataflow.md`](dataflow.md) | 数据流向、时序、fail-closed 点、不变量 | 改链路的人 |
+| [`runbook.md`](runbook.md) | 运维手册：起停、审计、迁移重放、熔断人工解除、开关核对、空集判读 | 运维 / 值班 |
 | [`TASKS.md`](TASKS.md) | 可执行任务（六字段） | 每个人 |
 | [`adr/`](adr/README.md) | 架构决策（只增不删） | 提变更的人 |
 | [`odr/`](odr/README.md) | 运行 / 治理决策（删档、审计、迁移、工具） | 做事的人 |
@@ -44,6 +46,7 @@ verified-by: QT-42 X3a 规则侧实装——文档导航与变更触发表核对
 | 建表 / 加列 / 加索引 / 改主键 | `db-schema.md`（+ 结构级变更立 ADR） |
 | 新增 / 修改 / 废弃接口 | `api-schema.md`（错误码与幂等两节要一起看）+ `ARCHITECTURE.md` §9（签名 / DTO / 版本策略） |
 | 新增数据源、改聚合口径、改顺序 | `dataflow.md` |
+| 改运维开关 / 起停与排障步骤 | `runbook.md` |
 | 改分层、依赖方向、模块职责 | `ARCHITECTURE.md` + 一条 ADR |
 | 删档 / 迁移 / 换 CI / 换工具链 | 一条 ODR |
 | 完成一张单 | `TASKS.md` 标 ✅，整条移入 `archive/` |

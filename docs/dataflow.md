@@ -38,7 +38,7 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
 `risk_events` 今天的**唯一生产者是告警流**：
 `verdict:"alert"`、`run_id="core:alert-loop"`、`order_id=Alert.ID`、`event_seq=0`，落点
 `core:cmd/analysis/wiring/risk_events.go`，开关 `risk_service.events_enabled`（**默认关** —— 关着的部署里
-`alerts` / `evaluate` 空集是设定，不是缺陷）。仍待：bundle → `ParseBundle` → `RiskPolicy`（F3 剩余半边）、
+`alerts` / `evaluate` 空集是设定，不是缺陷；G4 起响应带 `configured:false` 可判别，不再靠猜）。仍待：bundle → `ParseBundle` → `RiskPolicy`（F3 剩余半边）、
 熔断执行方、run 后逐笔裁决事件回传、`POST /events` 的审计留痕（`risk_events` 无 actor 列）、
 外部推送通道。**投递形态已于 2026-10-25 二批改为持久 outbox**（core 的 `quant.alert_outbox` +
 后台 relay 重投），本仓那句「允许延迟、不允许丢」不再只是端点侧的承诺 —— 逐条限制见下方
@@ -129,6 +129,7 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
 16. `POST /api/risk/monitor/evaluate`：同一投影上按 `min_severity` / `rule` / 窗口过滤并汇总；
     **不运行检测器、不写库、不推送外部通道**；响应 `detection:"outside_process"`。
     三个端点都先过 `Authorizer` 闸：未装配 → 503，无凭证 → 401，越权 → 403。
+    三个响应都带 `configured`（G4）：部署声明为 false ⇒ 空集是「未接入」；true + 空 ⇒ 「没触发」。
 
 ## 3. 失败模式（每一处 fail-closed 都要能指名）
 
@@ -147,7 +148,9 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
 | 熔断指令重复 | 重复平仓 | 幂等键 `breaker_id`：同键同载荷 → 200 `already_applied`；同键不同载荷 → 409（不执行） | ✅（X3d：`internal/breaker` + `circuit_orders` 主键） |
 | 鉴权闸未装配 / 角色不足 | 规则与审计被匿名读写 | 所有端点统一 fail-closed：未装配 `Authorizer` → 503，无凭证 → 401，越权 → 403 | ✅（`httpapi.requireAuth`；`TestAuth_ThreeStatesAndActor` / `TestRouteTableEqualsPolicyTable`） |
 | core 调本仓没带 `service` 凭证 | run 前取快照失败 ⇒ 按裁-11 该 run `failed` + `risk_rules_unavailable` | 策略表对 `resolve` / `events` 并列开 `service`（与 `trader` / `admin` 同在一条 `Roles`）；`audit` 与管理面不开 | ✅（2026-10-25 裁-17 + ADR-0006；`TestPolicy_ServiceRoleScope`）。**签发与注入不在本仓**（core QT-71 / kit KT-09） |
-| 监控读不到事件（读取端口未装配 / 库错误） | 把「读不到」显示成「没有敞口 / 没有告警」 | `503 dependency_unavailable` 或 500；绝不返回空报告冒充成功 | ✅（`event.ErrMonitorUnavailable`；`TestMonitor_RequiresReader`） |
+| 监控读不到事件（读取端口未装配 / 库错误） | 把「读不到」显示成「没有敞口 / 没有告警」 | `503 dependency_unavailable` 或 500；绝不返回空报告冒充成功 | ✅（`event.ErrMonitorUnavailable`；`TestMonitor_RequiresReader` / G4 的 `TestMonitor_PGUnreachableIsNotEmptySet`） |
+| 空集不可判别（未接入 vs 没触发） | 把「core 没接」读成「没触发」或反向 | 三个 monitor 响应都带 `configured` 判别位（部署声明 `RISK_EVENTS_EXPECTED`，缺省 false）；`false` = 未接入，`true`+空 = 没触发 | ✅ G4（`TestMonitor_EmptySetIsDiscriminable`；契约见 `api-schema.md` §1「空集的两种含义」） |
+| 本仓停服 / 不可达（core 两条腿） | 裁决链断 | `resolve` 腿：连接错误 / 超时 / 非 2xx ⇒ run **failed**，**不重试、不回落本地 `risk_manager.*`**；`events` 腿：连接错误 ⇒ 持久 outbox 重投（去重键幂等），不阻塞 run | ✅ 本仓侧已证（`TestDrill_StoppedServiceFailsLoud`：停服后两条腿都拿到 `connection refused`）；core 侧演练**未执行**（跨仓 + 本机无 PG），见 `TASKS.md` G4 |
 | 敞口字段缺口 / 窗口过大 | 低报风险 | 缺字段计入 `unpriced_events` / `unsigned_events`（不补零）；窗口 > 5000 条事件 → 400，不截断 | ✅（`TestExposure_AggregatesFromRiskEvents` / `TestExposure_RefusesTruncatedAggregate`） |
 | 告警事件投影非法 | 非法告警被静默吞掉 | 计入 `invalid_events`，不进入列表；严重度词表外同样计非法 | ✅（`TestAlerts_ProjectsAndSortsFromRiskEvents`） |
 | 汇总建立在截断数据上 | 少算告警 | `evaluate` 触到 limit → 400；`alerts` 分页截断显式 `truncated` | ✅（`TestEvaluate_ReportsWithoutWritingOrDetecting`） |
@@ -171,6 +174,7 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
 15. 路由表 ≡ 策略表（每个注册路由都有且仅有一个策略条目）。✅ `TestRouteTableEqualsPolicyTable`
 16. `service` 角色只声明在 `POST /api/risk/resolve` 与 `POST /api/risk/events` 两条端点上，且与 `trader` / `admin` **同在一条 `Roles`** 里（any-of 且 kit 不排序 ⇒ 不能互相顶替）；`GET /api/risk/audit` 与规则管理面用 `service` 一律 403；新增档位不放松既有语义（`viewer` 调 `resolve` 仍 403）。✅ `TestPolicy_ServiceRoleScope` / `TestPolicy_ServiceRoleDeclaredExactlyTwice` / `TestPolicy_ServiceRoleCoexistsWithHumanRoles`（ADR-0006）
 17. `params` 的键集合与单位由参数字典唯一裁定：写侧未知键 / 缺必填 / 越域即拒（不落库、不推进 head）；读侧只拒未知键、**不**重校取值域（历史快照仍可读，不变量 8 不被牵连）。✅ `TestParamsDictionary_IsPinned` / `TestValidate_RejectsParamsOutsideDictionary` / `TestParseBundle_RejectsUnknownParamKey` / `TestParseBundle_DoesNotRecheckValueDomain`
+18. 监控空集可判别：响应必带 `configured`；未接入（false）与已接入但没触发（true + 空）取值不同；读失败不得落成空集。✅ `TestMonitor_EmptySetIsDiscriminable` / `TestMonitor_PGUnreachableIsNotEmptySet`（G4）
 
 ## 5. 与契约文档的关系
 

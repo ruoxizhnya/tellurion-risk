@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-11-07
-verified-by: G1 施工 —— `/healthz` `/readyz`、限流（429 与 401 可区分、探针豁免）、错误码闭合表、幂等语义与分页/版本策略写入 §1；真实 PG 就绪与 compose --wait 未跑
+verified-by: G1 施工 —— `/healthz` `/readyz`、限流（429 与 401 可区分、探针豁免）、错误码闭合表、幂等语义与分页/版本策略写入 §1；真实 PG 就绪与 compose --wait 未跑。G4 施工（2026-11-07）—— 监控响应加 `configured` 判别位、失败语义五类、core→risk 超时/重试口径、`docs/runbook.md`；真实 PG / 容器腿与 core 侧演练未跑
 ---
 
 # API Schema — tellurion-risk
@@ -15,6 +15,9 @@ verified-by: G1 施工 —— `/healthz` `/readyz`、限流（429 与 401 可区
 > **监控聚合读**）、`internal/breaker`（熔断指令 + 幂等键），传输在 `internal/httpapi`
 > （标准库 `net/http`，不是 gin），持久化有 Memory 与 PG（`internal/pgstore`，启动时执行幂等 DDL；
 > 事务边界见 ADR-0003）。
+> **G4（2026-11-07）**：监控三端点的响应**新增 `configured` 判别位**（MINOR，加可选字段），
+> 用来区分「空集 = 未接入」与「空集 = 没触发」（§1「监控三端点」末）；失败语义五类与
+> core→risk 超时/重试口径见 §2/§3；运维步骤见 [`runbook.md`](runbook.md)。
 > **鉴权（2026-10-25，裁-15 + ADR-0005）**：机制在 kit `auth/httpadapter`（Bearer → `Parse` →
 > `kind=access` → 角色 any-of），策略表在本仓 `internal/httpapi/policy.go`；**所有端点**都过闸，
 > 未装配 `Authorizer` → **503 `auth_unavailable`**（拒绝而非放行）。读端点 viewer、写端点 trader、
@@ -199,6 +202,7 @@ verified-by: G1 施工 —— `/healthz` `/readyz`、限流（429 与 401 可区
   "window": {"from": "2026-10-23T12:00:00Z", "to": "2026-10-24T12:00:00Z"},
   "group_by": "symbol",
   "source": "risk.risk_events",
+  "configured": true,
   "events": 3,
   "unpriced_events": 1,
   "unsigned_events": 1,
@@ -227,6 +231,7 @@ verified-by: G1 施工 —— `/healthz` `/readyz`、限流（429 与 401 可区
 {
   "window": {"from": "2026-10-23T12:00:00Z", "to": "2026-10-24T12:00:00Z"},
   "source": "risk.risk_events",
+  "configured": true,
   "alerts": [
     {"id": "run-1:o-b:1", "rule": "position_concentration", "severity": "critical",
      "message": "position 40%", "symbol": "000001.SZ", "run_id": "run-1",
@@ -262,6 +267,7 @@ verified-by: G1 施工 —— `/healthz` `/readyz`、限流（429 与 401 可区
   "window": {"from": "2026-10-23T12:00:00Z", "to": "2026-10-24T12:00:00Z"},
   "source": "risk.risk_events",
   "detection": "outside_process",
+  "configured": true,
   "criteria": {"min_severity": "warning"},
   "alerts": [
     {"id": "run-1:o-a:1", "rule": "drawdown", "severity": "warning",
@@ -278,6 +284,24 @@ verified-by: G1 施工 —— `/healthz` `/readyz`、限流（429 与 401 可区
 - `min_severity` 缺省 `info`；非法值 → `400 invalid_params`。
 - `limit` 缺省 / 上限 1000；结果被截断（合法告警数超过 `limit`）→ `400 invalid_params`，
   **不允许汇总建立在截断数据上**。
+
+**空集的两种含义（G4，2026-11-07）—— 必须可判别**
+
+监控三端点的响应都带 `configured`（JSON bool，**必有键**，MINOR 新增）：
+
+| `configured` | 窗口内列表 | 含义（唯一口径） | 调用方动作 |
+|---|---|---|---|
+| `false` | 空 | **未接入**：本部署未声明 core 的 `risk_service.events_enabled=true`，或回传链路从未接通 | 先核对开关（`runbook.md` §5）；此时空集**不能**读成「没触发」 |
+| `true` | 空 | **已接入但没触发**：窗口内确实没有事件 / 告警 | 查 core 生产侧（检测器是否触发、outbox 是否积压 / 投递失败） |
+| `true` | 非空 | 正常 | — |
+
+> **为什么是「声明」而不是「探测」**：core 的开关在本仓进程外，本仓没有跨进程读心术。
+> 该值来自部署声明 `RISK_EVENTS_EXPECTED`（缺省 `false`，与 core 出厂 `events_enabled=false` 对齐）；
+> 声明与实际开关不一致属于**部署错误**，不是协议错误——因此不猜、不推断、不回填。
+> 读失败（PG 不可达）**不**降级成 `configured:false` + 空集，而是非 2xx（见 §2），否则又把
+> 「读不到」混进「空集」。
+> 用例：`TestMonitor_EmptySetIsDiscriminable`（两情形同窗口零记录，断言 `configured` 键存在且取值不同）、
+> `TestMonitor_PGUnreachableIsNotEmptySet`（读端口故障 ⇒ 500，不是空集）。
 
 **事件 `payload` 的监控投影（生产侧约定）**
 
@@ -306,6 +330,10 @@ verified-by: G1 施工 —— `/healthz` `/readyz`、限流（429 与 401 可区
 | 角色不足（读需 viewer / 写需 trader / 审批需 admin；`resolve` / `events` 另开 service） | 403 `forbidden` — **✅ 全部端点**（2026-10-25） | 不重试 |
 | 鉴权闸未装配 | 503 `auth_unavailable` — ✅ 全部端点（**拒绝而非放行**） | 不重试；等待运维装配 Authorizer |
 | 监控读取端口未装配 | 503 `dependency_unavailable` — ✅ | 不重试；服务端装配问题 |
+| 运行期 PostgreSQL 不可达（读 / 写 / 聚合） | 500 `internal`（不吐原文）；启动期则进程不监听、`/readyz` 503 | 按**服务不可用**处理：查 `/readyz`；只对幂等请求重试；`resolve` 腿失败 ⇒ run 拒绝启动 |
+| 规则库为空（`GET /rules`） | 200 `{"rules":[],"count":0}`（**不是错误**，也**不是** `null`） | 先建规则并审批；空库**不许**用默认限额开跑 |
+| 规则库有规则但无生效（approved/active）版本（`resolve latest`） | 404 `no_approved_rules` — ✅ `TestAPI_ResolveWithoutApprovedRules` | 审批激活后**重新发起一次**（人工动作，不是传输层自动重试） |
+| bundle 内参数出现词典外未知键 | **本仓不产生**（`GET .../bundle` 只回 canonical 快照原文，写侧已严格拒未知键）；若发生，消费方进程内 `rule.ParseBundle` 返回 `rule.ErrInvalidParams`（无 HTTP 码） | **拒绝开跑、不重试**；回查历史快照来源 / 是否手工改库 |
 | 监控时间窗非法（`from >= to` / 超 7 天）、事件数或告警数超上限 | 400 `invalid_params` — ✅ | 缩小窗口 / 降低 limit 后重试 |
 | 规则类型不在冻结枚举 | 400 `invalid_rule_type` | 修正请求，不重试 |
 | 参数非法（非 JSON 对象 / 空 / 超 64 KiB）、scope 非法、请求体非法 | 400 `invalid_params` | 修正请求，不重试 |
@@ -354,6 +382,29 @@ verified-by: G1 施工 —— `/healthz` `/readyz`、限流（429 与 401 可区
 - `monitor/evaluate`（POST）**只读**：不写 `risk_events`、不写任何表、不推送外部通道；同一输入可安全重放。
   它不运行检测器，因此重放不会产生新的告警。
 
+### 3.1 core → risk 与 risk → 出站：超时与重试口径（G4，2026-11-07）
+
+> **一句话**：`resolve` 一次、不重试；`events` 可重试但靠去重键幂等；**本仓零出站**。
+> 裁决权在 core 的这次 run 里，**重试不得把「这次用哪套规则」放大成「再抽一次签」**。
+
+**core → risk（两条腿）**
+
+| 腿 | 调用时机 | 超时 | 重试 | 失败语义 |
+|---|---|---|---|---|
+| `POST /api/risk/resolve`（`risk_rules_hash` 腿） | 每次 run 提交前 **1 次** | core 侧 `risk_service.resolve_timeout`（core 缺省 10s，归 `tellurion:QT-77` / `SVC-CORE-RISK-RETIRE` ④；本仓不双写该值，也不设客户端超时） | **禁止自动重试**（含超时、5xx、连接错误） | run **fail loudly**（如 `risk_rules_unavailable`），**禁止**回落本地 `risk_manager.*` 或默认限额 |
+| `POST /api/risk/events`（告警 relay 腿） | run 后异步批量（非热路径） | core 侧 `events_timeout`（缺省 10s）+ outbox relay 周期（15s） | **允许**：整批 5xx / 连接错误可整批重发（去重键幂等）；207 只重发 `failed` 项；4xx **不重试**（修数据后人工重发） | 不阻塞 run（异步），但不许静默丢：outbox 有最大尝试次数，耗尽必须可见（core 侧计数/告警） |
+
+- 服务端只有 `ReadHeaderTimeout: 5s`（进程入口），**没有**按调用方配置的 deadline；慢查询靠窗口上限（7 天 / 5000 事件）兜住。
+- `resolve` 的幂等只到「同 hash 同字节」；`latest` 在两次调用之间可能漂移——这正是**不能自动重试**的原因：
+  重试会掩盖第一次已经拿到的快照，把可复现的 run 变成不可解释的 run。
+
+**risk → 出站：零**
+
+- 本仓**不发起任何出站 HTTP / 推送 / webhook / APM 上报**；非测试代码里没有 `http.Client`、`http.Get/Post`、`net.Dial`。
+- 因此 **没有出站超时与重试**；`monitor/*` 是纯读聚合，`POST /events` 只落库，不存在「本仓去重试别人」的放大路径。
+- `configured:false` 的空集**不是**重试信号（重试不会让未接入变成已接入）；它只指向开关核对。
+- 将来若加外部通道（如告警推送），必须**另立单 + ADR + 改本节**；在契约未改前，任何出站调用都算越界。
+
 ## 4. 版本与兼容
 
 > 逐端点 / 逐符号的版本策略见 `ARCHITECTURE.md` §9.6；本节只留三条总则。
@@ -366,6 +417,8 @@ verified-by: G1 施工 —— `/healthz` `/readyz`、限流（429 与 401 可区
   改名或改语义 = breaking。`severity` 词表与 core `pkg/alert.Severity` 同源（`info|warning|critical`）。
 - 监控查询参数只增不删；`evaluate` 的 `detection:"outside_process"` 是**边界声明**，删掉它等于让调用方
   误以为检测发生在本仓，属 breaking。
+- 监控响应加 `configured`（G4）属 MINOR（加字段、旧读者不感知）；**删掉它或把 `false` 重定义为「没触发」** = breaking
+  （等于退回不可判别的空集）。
 - 快照格式变更必须保留旧格式读取器（否则历史回测不可复现）；hash 算法变更 = 域标签 v2，全历史 hash 作废。
 
 ## 5. 不提供什么（边界）

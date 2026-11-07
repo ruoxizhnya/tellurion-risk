@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,6 +71,10 @@ func main() {
 		log.Fatalf("riskservice: %v", err)
 	}
 	tokens := auth.NewTokenService(auth.Config{JWTSecret: startup.Secret})
+	// G4：monitor 的 `configured` 判别位是部署声明，不是探测——本仓看不见 core 的
+	// `risk_service.events_enabled`。默认 false 与 core 出厂值对齐；声明与 core
+	// 实际开关不一致属于部署错误，核对见 docs/runbook.md §5。
+	eventsExpected := envBool("RISK_EVENTS_EXPECTED")
 	srv := &http.Server{
 		Addr: *addr,
 		Handler: httpapi.New(svc,
@@ -77,9 +82,11 @@ func main() {
 			httpapi.WithBreakers(breakers),
 			httpapi.WithAuthorizer(httpapi.NewAuthorizer(tokens)),
 			httpapi.WithReadiness(stores.ready),
+			httpapi.WithEventIngestConfigured(eventsExpected),
 		).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	log.Printf("riskservice: event ingest declared=%t (RISK_EVENTS_EXPECTED)", eventsExpected)
 	log.Printf("riskservice: listening on %s (auth=%t)", *addr, tokens.Enabled())
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("riskservice: %v", err)
@@ -103,6 +110,20 @@ func envFirst(names ...string) string {
 		}
 	}
 	return ""
+}
+
+// envBool 读布尔开关；缺省与非法值一律 false（非法值告警，不猜）。
+func envBool(name string) bool {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return false
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		log.Printf("riskservice: ignoring invalid %s=%q (want true/false)", name, raw)
+		return false
+	}
+	return v
 }
 
 // stores 汇总本进程装配的各个 Store；PG 模式下同一个 *pgstore.Store 满足全部端口。

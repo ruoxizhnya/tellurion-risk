@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-11-07
-verified-by: QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两条用例 + 破坏验证），PG 集成腿未执行记 🔶；此前 SVC-RISK-G0 完成（Dockerfile + deploy/compose + 默认 8089 与 TCP 探针）；QT-74 前两步已落，迁 contracts / core 消费未做
+verified-by: QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两条用例 + 破坏验证），PG 集成腿未执行记 🔶；SVC-RISK-G4 施工（2026-11-07）—— 失败语义五类 / 超时重试口径 / monitor `configured` 判别位 / runbook / 本仓侧停服演练，core 侧演练未执行记 🔶；此前 SVC-RISK-G0 完成（Dockerfile + deploy/compose + 默认 8089 与 TCP 探针）；QT-74 前两步已落，迁 contracts / core 消费未做
 ---
 
 # TASKS — tellurion-risk 未完成项
@@ -687,7 +687,7 @@ verified-by: QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两�
 > - **破坏验证**：把 `ingestEvents` 的 `actorOf(r)` 换成常量 `"open-access"` → 两条子用例红（`DESTROY_EXIT=1`，报文 `actor = "open-access", want "service:core"`）；还原后复绿。
 > - **未执行（如实）**：⑤②「老行 `actor IS NULL` 且读面不报错」、⑤③「迁移连跑两次指纹不变」需要真 PG——本机无库（`127.0.0.1:5445` 无监听、Docker 引擎未起），本轮**未跑**；用例侧仅由 DDL 文本与 `COALESCE` 保证，故本单记 🔶 不标 ✅。补齐条件：起临时 PG（约定端口 5445、容器名带 `tellurion-risk` 前缀）后跑 `Migrations()` 两遍 + 插老行读回。
 
-### SVC-RISK-G4 · 服务就绪门 G4：开关默认值 · 回传失败语义 · runbook（ADR-036）[P1] ⬜
+### SVC-RISK-G4 · 服务就绪门 G4：开关默认值 · 回传失败语义 · runbook（ADR-036）[P1] 🔶
 
 - **① 目标**：把「本仓不可达时 core 会怎样」「事件回传开关关着时监控端点的空集是设定还是故障」成文，并给出可执行的运维手册。
 - **② 上下文**：core 侧两条开关出厂为 `false`（`config/analysis-service.yaml:122` 的 `resolve_enabled`；`events_enabled` 同批默认关），因此 `monitor/alerts` / `monitor/evaluate` 在默认部署下**必然是空集**——这不是缺陷而是设定，但今天只散落在两仓的施工记录里；本仓侧失败语义已有（全端点 fail-closed，未装配 Authorizer 时 **503 拒绝而非放行**，这是正确姿势）；缺 `/readyz`（属 `SVC-RISK-G1` ①）、缺超时/重试口径、缺 runbook（全 workspace `runbook` 只在 ADR-036 正文出现）。
@@ -695,6 +695,21 @@ verified-by: QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两�
 - **④ 约束与非目标**：不引 APM/告警通道；不做高可用；不改 `events_enabled` / `resolve_enabled` 的出厂值（值本身归 `tellurion:QT-77` 与 `SVC-CORE-RISK-RETIRE` ④）；不把检测器搬进本仓（U7 已裁）。
 - **⑤ 验收**：① 失败语义表五类各有用例或注明原因；② 「空集可判别」有一条用例断言响应里带得出判别位；③ 演练有真退出码（停服前后 core 侧各一次，输出贴进本单施工记录）；④ runbook 每条命令当场执行；⑤ 三条命令绿。
 - **⑥ 边界**：本仓运维面与语义判别；跨仓开关值与凭证归 core 侧两单。
+
+> **施工记录（2026-11-07，🔶 core 侧演练腿未执行）**
+> - **① 失败语义五类**（`docs/api-schema.md` §2 表；代码未改语义，只把散落的 fail-closed 写成契约）：
+>   ① Authorizer 未装配 → 503 `auth_unavailable`（`TestMonitor_NoAuthorizerFailsClosed`）；
+>   ② PG 不可达（运行期）→ 500 `internal`（不吐原文；启动期不监听、`/readyz` 503）— 新用例 `TestMonitor_PGUnreachableIsNotEmptySet`（注入连接拒绝的 Reader，断言 **500 而非空集**）；
+>   ③ 规则库为空 → `GET /rules` 200 `{"rules":[],"count":0}`，`resolve latest` 404 `no_approved_rules` — 新用例 `TestAPI_EmptyRuleLibraryIsExplicit`；
+>   ④ `resolve` 无生效版本 → 404 `no_approved_rules`（`TestAPI_ResolveWithoutApprovedRules`）；
+>   ⑤ `bundle` 参数未知键 → 本仓**不产生 HTTP 码**（bundle 只回 canonical 原文，写侧已拒）；消费进程内 `rule.ParseBundle` 返回 `ErrInvalidParams`（`TestParseBundle_RejectsUnknownParamKey`）——原因写进了表。
+> - **② 超时/重试口径**：`docs/api-schema.md` §3.1。`resolve` run 前 **1 次、禁止自动重试**（超时/5xx/连接错误 ⇒ run fail loudly，不回落本地 `risk_manager.*`）；`events` 异步批量可整批重试（去重键幂等）、207 只补 failed、4xx 不重试；**本仓零出站**——非测试代码检索 `http.Client|http.Get|http.Post|net.Dial` 零命中（仅 `_test.go` 命中）。
+> - **③ 空集判别位**：三个 monitor 响应新增 `configured`（bool，必有键）。`false` = 未接入；`true` + 空 = 没触发。来源是**部署声明** `RISK_EVENTS_EXPECTED`（缺省 false，与 core 出厂 `events_enabled=false` 对齐），因为本仓看不见 core 的开关。代码：`internal/httpapi/monitor.go`（`exposureBody`/`alertBody`/`evaluationBody`）、`internal/httpapi/api.go`（`WithEventIngestConfigured`）、`cmd/riskservice/main.go`。用例：`TestMonitor_EmptySetIsDiscriminable`（同窗口零记录，两子用例断言 `configured` 键存在且 false/true 不同）。
+> - **④ runbook**：新建 `docs/runbook.md`（§1 起停 / §2 审计 / §3 迁移重放 / §4 熔断人工解除 / §5 开关核对 / §6 空集判读 / §7 停服演练）。本机实跑（内存档，`127.0.0.1:18091`）：`HEALTHZ={"status":"ok"}`、`READYZ={"status":"ready"}`、`CREATE=201 APPROVE=200 EVENTS=200`、`AUDIT={"count":2}`；`ALERTS_DEFAULT` 带 `"configured":false`；`RISK_EVENTS_EXPECTED=true` 实例（`:18092`）同窗口回 `"configured":true`，启动日志 `event ingest declared=true (RISK_EVENTS_EXPECTED)`。**未执行**：`psql` 审计/迁移/SQL 腿、`docker compose`、真 PG 迁移重放（本机 5445 无监听、Docker 引擎不可用）。
+> - **⑤ 演练（本仓侧，真二进制，真退出码）**：停服前 `resolve` HTTP 200 / curl exit 0（`risk_rules_hash=2b078e0c…f45d45`）、`events` HTTP 200 / exit 0；停服后两条腿均 `curl: (7) Failed to connect ... Could not connect to server`、`HTTP=000`、`exit=7`。自动版 `TestDrill_StoppedServiceFailsLoud` PASS，日志 `dial tcp 127.0.0.1:52962: connectex: No connection could be made...`（两条腿都打印）。**core 侧两腿（真实 core 进程的 `risk_rules_hash` 与 relay）未执行**：跨仓且本机无 PG，core 起不来；不写通过。
+> - **破坏验证**：把 `monitor.go` 的 `Configured: s.eventIngestConfigured` 改成 `Configured: true` → `TestMonitor_EmptySetIsDiscriminable/未接入` 红（`configured = true, want false`，`BREAK_TEST_EXIT=1`）；逐字节还原后 sha256 `C067783A7F36C66B43F40D93AF6282A75F9EB619B25723CD32835B8E6D2BD217` 前后一致，复跑 PASS（`RESTORE_TEST_EXIT=0`）。
+> - **门禁**：`gofmt -l .` 无输出 / 退出 0；`go build ./...` 0；`go vet ./...` 0；`go test ./... -count=1` 0（`internal/pgstore` 的 `TestMigrationReplay_Integration` SKIP：`RISK_TEST_DSN not set`，不是假绿）。
+> - **剩余腿（故记 🔶）**：core 侧停仓演练、真 PG 的 PG 不可达 / 迁移重放、Docker 起停。补齐前置：起临时 PG（约定端口 5445）+ 可运行的 core 分析服务。
 
 ## 施工序（候选单，开工前必须展开成六字段）
 

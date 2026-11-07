@@ -17,6 +17,9 @@ services:
       # 凭证来源（QT-77）：risk 是**验签方**，只需要共享 JWT_SECRET，不持有
       # 任何 *_TOKEN；签发/轮换口径见 tellurion:docs/SPEC.md 的「服务间凭证」节。
       JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
+      # G4：monitor 的 `configured` 判别位是**部署声明**（不是探测）。必须与 core
+      # 的 risk_service.events_enabled 保持一致；缺省 false 与 core 出厂值对齐。
+      RISK_EVENTS_EXPECTED: ${RISK_EVENTS_EXPECTED:-false}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

@@ -40,6 +40,11 @@ core 侧消费接线**拆两半读**（2026-10-25 订正）：✅ `risk_rules_ha
 （默认 50 rps / 突发 200），**鉴权先于限流**（401/403 不会被 429 顶替），超限 `429 rate_limited` + `Retry-After`。
 真实 PG 断开/恢复与 `compose up --wait` 两条腿**未执行**（本机 Docker 引擎未起），单子记 🔶。
 
+**空集判别（G4，2026-11-07）**：`monitor/*` 三个响应都带 `configured`（必有键）：`false` = 未接入
+（部署声明 `RISK_EVENTS_EXPECTED`，缺省 false，与 core 出厂 `events_enabled=false` 对齐）；`true` + 空 =
+已接入但没触发。本仓看不见 core 的开关，所以它是**声明**不是探测；读失败（PG 不可达）走非 2xx，不降级成空集。
+失败语义五类、core→risk 超时/重试口径见 `docs/api-schema.md` §2/§3.1；运维步骤见 `docs/runbook.md`。
+
 **留在 core 的实现**：`core:pkg/risk`（`RiskManager` / `RegimeDetector` / `StopLossChecker` / `CheckOrder`）+ `core:pkg/compliance`（异常交易 / 减持 / 大额报送）+ `core:pkg/alert`（**6 个检测器 + 进程内 `alertLoop`**）。
 **U7 已裁（2026-10-24）**：告警的**通道编排与报送**归本仓（`monitor/exposure` / `alerts` / `evaluate` 三端点）；**检测器不搬出 core**——逐 bar / 逐笔裁决仍在本进程内，禁止远程调用。
 
@@ -88,7 +93,8 @@ go test ./...
 ## 5. 活在哪、文档在哪
 
 - **本仓台账**：`docs/TASKS.md`（唯一）。**没有单号别开工。**
-- 文档导航：`docs/README.md`；边界与依赖方向：`docs/ARCHITECTURE.md`；决策：`docs/adr/`。
+- 文档导航：`docs/README.md`；边界与依赖方向：`docs/ARCHITECTURE.md`；决策：`docs/adr/`；
+  起停 / 审计 / 迁移重放 / 熔断解除 / 开关核对：`docs/runbook.md`。
 - 跨仓背景（只读，不在本仓改）：`tellurion:docs/design/qt-decoupling/repo-topology-and-naming.md`、`tellurion:docs/TASKS.md`。
 
 > 跨仓引用一律写 `repo:path` 纯文本，**不做可点击相对链接**——独立 checkout 时 `../../` 必断，R2 会永远红。
