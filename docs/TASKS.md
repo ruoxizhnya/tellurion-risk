@@ -651,7 +651,7 @@ verified-by: QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两�
 > - **破坏验证（三条，均红后逐行还原复绿）**：① 关掉限流判定 → 第二次请求 200（want 429）；② `readyz` 恒 200 → down 场景 200（want 503）；③ `rule_not_found` 改 400 → 错误码对拍红。
 > - **未执行（如实，不写成已完成）**：⑤①「真实 PG 断开 → 恢复」与 ⑤②「`docker compose up --wait` 到 healthy」**未跑**——本机 Docker 引擎未起、`127.0.0.1:5445` 无监听；`/readyz` 的 PG 分支只由注入式用例覆盖，compose 探针只改了文本未实际拉起。据此本单记 🔶 而非 ✅。补齐条件：起临时 PG（约定端口 5445、容器名带 `tellurion-risk` 前缀）后跑 `compose up --wait` + 断连/恢复三态。
 
-### SVC-RISK-G2 · 服务就绪门 G2：`risk.*` 唯一 writer 与可重放迁移（ADR-036）[P0] ⬜
+### SVC-RISK-G2 · 服务就绪门 G2：`risk.*` 唯一 writer 与可重放迁移（ADR-036）[P0] 🔶（2026-11-07 施工；真 PG 重放腿未执行）
 
 - **① 目标**：`risk.*` 五族表（规则 / 版本 / 审批 / 审计 / `risk_events` / 熔断 + `limits`）在本仓自证「只有我写、迁移可重放」，并把「裁决权双真相」这条非表形态的缺口登记清楚。
 - **② 上下文**：`internal/pgstore` 在 `cmd/riskservice` 启动时执行 `rule.Migrations()`（幂等 DDL），读-改-写经 `Store.Tx`（PG 行锁）；`risk.limits` 今天仍是**空壳**（本仓台账 `:564` 自证「`risk.limits` 若要端点则另立单」）；ADR-036 §5 的数据归属矩阵把 risk 这一行写成「规则快照已住 `risk.*`，但 `bundle → RiskPolicy` 未接，进程内限额仍来自 core 配置」⇒ **G2 对 risk 不只是表，还包括「限额真相是否唯一」**（这是六仓里唯一有此形态的仓）；`risk.audit_logs`（人操作审计）与 core 的 `audit.message_log`（消息重放）**不是一回事**，护栏别把它们当一个。
@@ -659,6 +659,15 @@ verified-by: QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两�
 - **④ 约束与非目标**：不 `DROP` 表；不改规则参数词典（QT-74 已 ✅，动它另单）；不接 core 的 `ParseBundle`（跨仓）；不新建与 core 重叠的审计表。
 - **⑤ 验收**：① 重放腿两次指纹逐位相同（贴输出）；② 破坏验证：加一行 `INSERT INTO public.audit_logs` ⇒ 护栏红，还原复绿；③ `risk.limits` 的处置有落档且 `db-schema.md` 一致；④ 「限额真相」双 owner 行写进 `db-schema.md` 并可被 core 反查；⑤ 三条命令绿。
 - **⑥ 边界**：本仓 schema 与真相登记；事件 `actor` 列的 schema 变更**不在本单**（见 `QT-80`，同为本仓但独立验收）。
+
+> **施工记录（2026-11-07）**：
+> - **① 迁移重放自证腿**：新增 `internal/pgstore/migrate_test.go`（`TestMigrationReplay_Integration`，读既有 `RISK_TEST_DSN`，未设置即 `t.Skip`）：同一测试库连跑两次 `pgstore.Migrate`（= `rule.Migrations()`），对「各表行数 / `pg_indexes` 的 indexname+indexdef / `information_schema.columns` 列集」三组**排序后 sha256** 指纹逐位比对，并断言 7 张表全部存在；另加不依赖 PG 的 `TestFingerprint_IsDeterministic`（顺序无关、内容变化必换指纹）。
+> - **② 禁跨 schema 写护栏**：新增 `internal/pgstore/ownership_test.go`（`TestNoCrossSchemaWrites`）：用 `go/parser` 抽本仓全部 `.go` 的字符串常量（不扫注释），按写语句正则（INSERT / UPDATE / DELETE / MERGE / TRUNCATE / CREATE-ALTER-DROP / COPY）取 schema，命中 `quant.` / `market.` / `run.` / `strategy.` / `analysis.` / `ai.` / `broker.` / `public.` 即红；`risk.` / `pg_catalog` / `information_schema` / 无 schema 的临时表与全部只读 SELECT 放行。`public.audit_logs` 归 `public` 命中集，**不在豁免名单**（`risk.audit_logs` 与 core 的 `audit_logs` / `audit.message_log` 仍按 §1 的「两个 audit 不是一回事」区分）。附 `TestForeignWriteGuardrail_Fixtures` 正反例（正例用字符串拼接构造，避免自指）。
+> - **③ `risk.limits` 处置 = 「显式声明本表暂不启用」**（二选一已定死）：`docs/db-schema.md` §1 owner 表标「**未启用、无写者**」，§7.4 写启用前置两条（本仓限额端点另立单 + 消费方 = `tellurion:SVC-CORE-RISK-RETIRE` 的 `bundle` 接线），§6 同口径。**未新建端点、未加写路径**。
+> - **④ 「限额真相」双 owner**：`docs/db-schema.md` **新增 §8**（此前只有散落的 §1/§6/§7.4 定性，无登记行）：当前写者 = `tellurion:config/analysis-service.yaml` 的 `alert.*` 5 个阈值 + `risk_manager.*` 14 个标量（`tellurion:pkg/bootstrap/engine.go` 的 `BuildRiskManager` 读取）；目标写者 = 本仓 `rule_snapshots.rules[].params`（`risk.limits` 未启用、不在名单）；收口 = `tellurion:SVC-CORE-RISK-RETIRE` + 本仓 `SVC-RISK-G3`；`resolve_enabled` 今天仍为 `false`（`tellurion:config/analysis-service.yaml:122`）。
+> - **验收（真实退出码）**：`gofmt -l` 改动文件 = 空输出（`GOFMT_EXIT=0`）；`BUILD_EXIT=0` / `VET_EXIT=0` / `TEST_EXIT=0`（6 个包全 `ok`；`pgstore` 含新增 4 条用例）。
+> - **破坏验证（真做真还原）**：在 `internal/rule/ddl.go` 的 `migrationStatements` 临时插入一行 `` `INSERT INTO public.audit_logs (id) VALUES ('x')` ``（第 10 行）⇒ `TestNoCrossSchemaWrites` **FAIL**：`internal\rule\ddl.go:10 writes to foreign schema "public": INSERT INTO public.audit_logs (id) VALUES ('x')`（`DESTROY_EXIT=1`）。用备份逐字节还原后 `SHA256_BEFORE = SHA256_AFTER = CFF8ABCA6503163C8E4173F4063868556C2E125516EEF897BCF81B3F9DBF08AD`，复跑同用例 `PASS`（`RESTORE_TEST_EXIT=0`）。
+> - **未执行（如实，不写成已完成）**：⑤①「真实 PG 上连跑两次 `rule.Migrations()` 指纹不变」**未跑**——本机无 PostgreSQL（`127.0.0.1:5432` 无监听）、Docker 引擎不可用；该腿只在 `RISK_TEST_DSN` 非空时执行，本轮 `go test` 里为 `--- SKIP: TestMigrationReplay_Integration (RISK_TEST_DSN not set)`，**不是假绿**。据此本单记 🔶。补齐条件：起临时 PG（容器名带 `tellurion-risk` 前缀）后跑 `RISK_TEST_DSN='postgres://...' go test ./internal/pgstore -run TestMigrationReplay -count=1 -v`。
 
 ### QT-80 · 风险事件行带调用方身份（`risk_events.actor` + 写审计）[P1] 🔶（2026-11-07 代码已落；PG 集成腿未执行）
 
