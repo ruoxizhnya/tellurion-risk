@@ -631,7 +631,7 @@ verified-by: QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两�
 > ② **M8 接口对表已落（2026-10-22）** → 本仓 [`ARCHITECTURE.md`](ARCHITECTURE.md) §9（模板 = `tellurion:docs/design/qt-decoupling/data-service-contract-and-ownership.md` §4.1；**本行原指的 `target-module-topology.md` UnifiedDataPoint 节是幻影引用，已订正**）。
 > 正文以 core 彼处为准，此处只留指针、不镜像。
 
-### SVC-RISK-G1 · 服务就绪门 G1：公开健康/就绪端点 · 错误模型闭合 · 版本化（ADR-036）[P0] 🔶（2026-11-07 代码与文档已落；真实 PG 与 compose 腿未跑）
+### SVC-RISK-G1 · 服务就绪门 G1：公开健康/就绪端点 · 错误模型闭合 · 版本化（ADR-036）[P0] 🔶（2026-11-07 代码与文档已落；真实 PG 已补跑，compose 腿未跑）
 
 - **① 目标**：本仓 13 条端点补齐 ADR-036 §3 的 G1 五件，并关掉台账里那条**已写明却无人执行的承诺**。
 - **② 上下文**：台账 `:67` 原文「**公开健康 / 就绪端点（`/healthz`、`/readyz`）：本仓今天没有，探针是 TCP；G1 补**」——而此前**不存在 G1 单**（实测本文件此前只有 `SVC-RISK-G0` 与 `SVC-RISK-G3`）；实测 `internal/httpapi` 与 `cmd/riskservice` 里 `healthz` / `health` **0 命中**，`deploy/compose.yaml:20-23` 的健康检查是 `nc -z 127.0.0.1 8089`（TCP，只能证明端口在听，证明不了规则库可用）。已落的一半：鉴权完整（`policy.go` 策略表 + kit `auth/httpadapter`，全端点 fail-closed；`service` 角色只开 `POST /api/risk/resolve` 与 `POST /api/risk/events` 两条，ADR-0006）；分页在 `rules` 与 `audit` 两条读面上部分已有。**未落**：版本化兼容策略、错误码闭合表、限流、幂等键口径（`breakers` 有幂等键、`events` 有去重键，但两者的「重复请求返回什么」未成文）。
@@ -649,7 +649,8 @@ verified-by: QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两�
 > - **⑥ 限流**：按身份（`username`→`subject`→`open-access`）令牌桶，默认 50 rps / 突发 200，无新依赖；超限 `429` + `code:"rate_limited"` + `Retry-After`；**鉴权失败先于限流**，`401/403` 不会被 429 顶替；探针豁免。
 > - **验收（真实输出）**：`gofmt -l .` 空输出 / `BUILD_EXIT=0` / `VET_EXIT=0` / `TEST_EXIT=0`（6 个包全 ok）；**真实二进制 smoke**（内存档、`127.0.0.1:18089`）：`/healthz` → 200 `{"status":"ok"}`、`/readyz` → 200 `{"status":"ready"}`、`/api/risk/rules` → 200 `{"rules":[],"count":0}`；临时 exe 已清理。
 > - **破坏验证（三条，均红后逐行还原复绿）**：① 关掉限流判定 → 第二次请求 200（want 429）；② `readyz` 恒 200 → down 场景 200（want 503）；③ `rule_not_found` 改 400 → 错误码对拍红。
-> - **未执行（如实，不写成已完成）**：⑤①「真实 PG 断开 → 恢复」与 ⑤②「`docker compose up --wait` 到 healthy」**未跑**——本机 Docker 引擎未起、`127.0.0.1:5445` 无监听；`/readyz` 的 PG 分支只由注入式用例覆盖，compose 探针只改了文本未实际拉起。据此本单记 🔶 而非 ✅。补齐条件：起临时 PG（约定端口 5445、容器名带 `tellurion-risk` 前缀）后跑 `compose up --wait` + 断连/恢复三态。
+> - **真实 PG 断开 → 恢复（2026-11-07 晚已跑；便携 PG 16.2 `127.0.0.1:55432`，库 `tellurion_risk_test`，服务 `cmd/riskservice` 监听 `127.0.0.1:18091`）**：起库后 `/healthz` → `200 {"status":"ok"}`、`/readyz` → `200 {"status":"ready"}`、无 token `GET /api/risk/rules` → `200 {"rules":[],"count":0}`；`pg_ctl … stop -m fast`（`STOP_EXIT=0`）后 `/readyz` → `503 {"status":"not_ready","error":"postgres unreachable: failed to connect to `user=postgres database=tellurion_risk_test`: 127.0.0.1:55432 … actively refused it."}`，同刻 `/healthz` 仍 `200 {"status":"ok"}`；重启库后 `/readyz` → `200 {"status":"ready"}`（**未重启服务**，池自愈）。
+> - **仍未执行（如实，不写成已完成）**：⑤②「`docker compose up --wait` 到 healthy」——本机 Docker 引擎未起，compose 探针只改了文本未实际拉起。据此本单仍记 🔶 而非 ✅。补齐条件：起 Docker 后跑 `compose up --wait` + 断连/恢复三态。
 
 ### SVC-RISK-G2 · 服务就绪门 G2：`risk.*` 唯一 writer 与可重放迁移（ADR-036）[P0] ✅（2026-11-07 真库重放腿补跑通过）
 
