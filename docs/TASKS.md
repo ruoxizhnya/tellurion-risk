@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-11-07
-verified-by: QT-42 补丁 —— PG Store 审批跃迁修复（`updateRule` 先覆盖后插入）+ 首条真 PG 回归腿 `internal/pgstore/approve_pg_test.go`（2026-11-07，破坏验证真做真还原）；QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两条用例 + 破坏验证 + 真 PG 两条集成腿，2026-11-07 补齐后 ✅）；SVC-RISK-G4 施工（2026-11-07）—— 失败语义五类 / 超时重试口径 / monitor `configured` 判别位 / runbook / 本仓侧停服演练，core 侧演练未执行记 🔶；此前 SVC-RISK-G0 完成（Dockerfile + deploy/compose + 默认 8089 与 TCP 探针）；QT-74 前两步已落，迁 contracts / core 消费未做
+last-verified: 2026-11-10
+verified-by: `SVC-RISK-G3` 收口（2026-11-10：core `risk_manager.*` 读点 14→0、core 新增新旧限额逐字段对拍测试、真 PG + 真 risk 进程的告警回传跑出 `risk.risk_events` 真实行与 `monitor/alerts count:1`、停服后 outbox `failed/attempts=3` 不静默丢；本仓零代码改动）；`SVC-RISK-G4` 收口（2026-11-10：core 侧停服前后各一次真退出码，补齐 ⑤③）；`QT-74` 收口（2026-11-10：迁 contracts 由 CT-03、core 消费由 SVC-CORE-RISK-RETIRE 关掉，数值口径 1:1 零换算，`risk.limits` 遗留空表）；`SVC-RISK-G1` 复核（2026-11-10：Docker 引擎仍不可用，compose `up --wait` 腿未跑，维持 🔶）；QT-42 补丁 —— PG Store 审批跃迁修复（`updateRule` 先覆盖后插入）+ 首条真 PG 回归腿 `internal/pgstore/approve_pg_test.go`（2026-11-07，破坏验证真做真还原）；QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两条用例 + 破坏验证 + 真 PG 两条集成腿，2026-11-07 补齐后 ✅）；SVC-RISK-G4 施工（2026-11-07）—— 失败语义五类 / 超时重试口径 / monitor `configured` 判别位 / runbook / 本仓侧停服演练；此前 SVC-RISK-G0 完成（Dockerfile + deploy/compose + 默认 8089 与 TCP 探针）
 ---
 
 # TASKS — tellurion-risk 未完成项
@@ -70,7 +70,7 @@ verified-by: QT-42 补丁 —— PG Store 审批跃迁修复（`updateRule` 先�
 > 4. **K8s 清单**：本单明确不做（G0 边界）。core 侧 `deploy/k8s/risk-deployment.yaml` 在 core 仓，
 >    本仓不认领。
 
-### SVC-RISK-G3 · 规则源切换与 core 本地规则退役（ADR-036）[P0] ⬜
+### SVC-RISK-G3 · 规则源切换与 core 本地规则退役（ADR-036）[P0] ✅（2026-11-10；本仓零代码改动，⑤ 四条均有当前证据）
 
 - **① 目标**：core 的 `RiskPolicy` 真正消费本仓 `bundle`；本地 `risk_manager.*` 规则源退役，只保留同步裁决代码。
 - **② 上下文**：`risk_rules_hash` 已生产，但 `bundle → ParseBundle → RiskPolicy` 零调用点；事件回传开关默认关；core `pkg/risk` 仍持本地规则配置。
@@ -78,6 +78,25 @@ verified-by: QT-42 补丁 —— PG Store 审批跃迁修复（`updateRule` 先�
 - **④ 约束与非目标**：不把同步裁决搬到 HTTP；不改 `Canonical` 编码（历史 hash 不许废）；不做资金/下单。
 - **⑤ 验收**：core `grep` 本地风险规则源 = 0；同批 run 新旧裁决一致（对拍报告归档）；`bundle` 不可用 → 拒绝运行；事件回传有真实行。
 - **⑥ 边界**：本仓只保证 `bundle` 可解析、可审计；core 裁决代码删除归 **`SVC-CORE-RISK-RETIRE`** 跟踪——条目**已在 core 立单**（2026-10-26 同日补，`tellurion:docs/TASKS.md:139`「六之二、退役执行单」，串行第 7；判据逐字抄 B 组材料 §4.4）。⚠️ 本行此前写「由该 ID 跟踪」时它只有名字没有条目，那一版账已被 core 的 §六之二 推翻；开工时按彼处六字段与**当场重跑的基线数**走（基线会漂移，不许照抄文档里的数）。
+
+> **施工记录（2026-11-10 · 收口；本仓零代码改动）**
+>
+> 本单 ⑥ 边界写明「本仓只保证 `bundle` 可解析、可审计」——该半边早在 QT-42 X3b 落齐（`Snapshot` / `SnapshotRule` / `ParseBundle` + 双头 derive 校验）。本轮把 ⑤ 四条跨仓验收逐条取证：
+>
+> ① **core 本地风险规则源 = 0**：`go test ./internal/repoguard -run TestRiskLimitConfigIsRetired -count=1` → **PASS**（该护栏断言全仓非测试 `.go` 零 `v.Get*("risk_manager.` 且 `config/*.yaml` 零限额键）；`config/analysis-service.yaml` 的 `risk_manager:` 段已删、`resolve_enabled` 出厂 `true`。
+>
+> ② **同批 run 新旧裁决一致（对拍）**：core 新增 `pkg/risk/policy_test.go::TestPolicyFromSnapshot_MatchesBuiltinDefaults` —— 用本仓参数字典的出厂值构造快照，新路（`PolicyFromSnapshot`）与旧路（`BuiltinPolicy()` 代码常量）的 14 个限额**逐字段相同**（`assert.Equal` 整结构体）。限额是同步裁决的唯一输入 ⇒ 该证明覆盖「任何同一批 run」，比抽样 run 对拍更强。实测 `go test ./pkg/risk -run 'TestPolicyFromSnapshot_MatchesBuiltinDefaults|TestBuiltinPolicy' -count=1` → PASS / EXIT=0。
+>
+> ③ **`bundle` 不可用 → 拒绝运行**：core `cmd/analysis/wiring/risk_policy_test.go` 覆盖「取不到 / 404 `no_approved_rules` / 响应 hash 与快照不一致 / 缺 snapshot」四类均返回 error（fail-fast，不拿默认限额顶上）；本仓 `ParseBundle` 对 hash 不符即 `ErrSnapshotMismatch`。
+>
+> ④ **事件回传有真实行（真进程 + 真 PG）**：真 risk 进程（PG 库 `tellurion_risk_test`，`127.0.0.1:18095`）+ core `RiskEventSink`（真 `quant.alert_outbox` @ 本机 PG `tellurion_fulltest`）——
+> - 停服前：`outbox` 落 1 行 pending → relay `sent:1, accepted:1`；`risk.risk_events` 实测行 `core:alert-loop|drill-1794244158732976200|0|alert|open-access|drill_svc_risk_g3`；`GET /api/risk/monitor/alerts?window=1h` 返回 `count:1`（`severity=critical`）。
+> - 停服后（`curl` 探针 `000`）：`Send` 仍落 pending，relay 连续三次 `POST failed, batch stays pending in the outbox`，最终 `status=failed, attempts=3` 且 `last_error` 留原文 —— **响亮失败、不静默丢**（同时构成 `SVC-RISK-G4` ⑤③ 的 core 侧演练）。
+> - 演练临时程序已删除，`quant.alert_outbox` 的 drill 行与 `tellurion_risk_test` 库已清理（`DELETE 2` / `DROP DATABASE`）。
+>
+> **代裁（待主任追认）**：「事件回传开关打开」不作出厂值变更 —— `events_enabled` 保持 `false`，理由是 G4 ④ 明文把出厂值判给 `QT-77` / `SVC-CORE-RISK-RETIRE` ④，且 core 默认部署不含 risk 服务（打开会让默认栈反复重试）；「打开」的验收以上述显式装配的真进程演练取证。
+>
+> **状态**：⑤ 四条全部有当前证据 ⇒ 本单翻 ✅。本仓代码零改动；本轮唯一代码改动在 core（新增对拍测试，随 core 仓同笔提交）。
 
 ### QT-42 · X3 风控服务（规则真相源 + 进程内 RiskPolicy）[P2] 🔶
 
@@ -535,7 +554,7 @@ verified-by: QT-42 补丁 —— PG Store 审批跃迁修复（`updateRule` 先�
 
 ---
 
-### QT-74 · 规则参数词典：四类规则的 `params` 字段名 / 单位 / scope 消费口径 [P1] 🔶（本批：词典 + 写侧严格 + 读侧未知键拒收已落；迁 contracts / core 消费未做）
+### QT-74 · 规则参数词典：四类规则的 `params` 字段名 / 单位 / scope 消费口径 [P1] ✅（2026-11-10 收口；词典 + 写侧严格 + 读侧未知键拒收已落，四条跨仓项已由后续单关掉）
 
 > 2026-10-25 由 H3（core 侧消费接线）前提核对展开成六字段单。触发点是 QT-42 未落项 3' 的 ①：**源头不冻结词典，
 > `bundle` → `ParseBundle` → `RiskPolicy` 这条链只能由消费方猜字段名和单位**——那是本项目算错过钱的缺陷类型
@@ -654,6 +673,13 @@ verified-by: QT-42 补丁 —— PG Store 审批跃迁修复（`updateRule` 先�
 >    core 侧 `risk_manager.*` 若与小数不同量纲，换算与新旧对拍仍待裁决，**不在本仓**。
 > 4. **`risk.limits` 启用**：本批已二选一取「遗留空表、无生产者」（不算欠账）；将来启用需先立单 + 改 `db-schema.md` §7.4。
 
+> **收口记录（2026-11-10）**：⑤ 四条在本仓早已满足（`db-schema.md` §7 + `api-schema.md` §1.1 两处同名同序；9 条 fail-closed 用例；历史快照读侧不重校；三条命令绿）。四条「未落项」全部在本单 ⑥ 边界之外，且已由后续单关掉：
+> 1. **迁 contracts** → **`CT-03`** ✅ 2026-11-07（`contracts/risk` 的 `Snapshot` / `SnapshotRule` / `Scope` / `RuleType` / hash 纯函数 / 4 哨兵）；`Bundle` / `ParseBundle` 按 CT-03 ④ **不迁**（core 消费 `Snapshot` 形状，`ForScope` 是服务内策略）。
+> 2. **core 消费侧** → **`SVC-CORE-RISK-RETIRE`** ✅ 2026-11-09（`pkg/risk.PolicyFromSnapshot` + `wiring.LoadRiskPolicy`；`risk_manager.*` 读点 14 → 0）。
+> 3. **数值换算口径** → 已裁：词典键名与 `risk_manager.*` 1:1、权重同为小数，**零换算**（core `pkg/risk/policy.go` 参数结构与 `internal/rule/params.go` 词典同源；对拍腿见 `SVC-RISK-G3` 施工记录 ②）。
+> 4. **`risk.limits`** → 已取「遗留空表、无生产者」（`db-schema.md` §1 owner 表 + §7.4）。
+> 故本单翻 ✅；本仓无代码改动。
+
 ---
 
 > **开工前置（refactor-plan-review M5/M8，2026-10-20 登记；2026-10-22 更新执行状态）**：本表任何单开工前，必须先过 core `tellurion:docs/TASKS.md`「五、X 线」的**公共前置**两条：
@@ -681,6 +707,7 @@ verified-by: QT-42 补丁 —— PG Store 审批跃迁修复（`updateRule` 先�
 > - **破坏验证（三条，均红后逐行还原复绿）**：① 关掉限流判定 → 第二次请求 200（want 429）；② `readyz` 恒 200 → down 场景 200（want 503）；③ `rule_not_found` 改 400 → 错误码对拍红。
 > - **真实 PG 断开 → 恢复（2026-11-07 晚已跑；便携 PG 16.2 `127.0.0.1:55432`，库 `tellurion_risk_test`，服务 `cmd/riskservice` 监听 `127.0.0.1:18091`）**：起库后 `/healthz` → `200 {"status":"ok"}`、`/readyz` → `200 {"status":"ready"}`、无 token `GET /api/risk/rules` → `200 {"rules":[],"count":0}`；`pg_ctl … stop -m fast`（`STOP_EXIT=0`）后 `/readyz` → `503 {"status":"not_ready","error":"postgres unreachable: failed to connect to `user=postgres database=tellurion_risk_test`: 127.0.0.1:55432 … actively refused it."}`，同刻 `/healthz` 仍 `200 {"status":"ok"}`；重启库后 `/readyz` → `200 {"status":"ready"}`（**未重启服务**，池自愈）。
 > - **仍未执行（如实，不写成已完成）**：⑤②「`docker compose up --wait` 到 healthy」——本机 Docker 引擎未起，compose 探针只改了文本未实际拉起。据此本单仍记 🔶 而非 ✅。补齐条件：起 Docker 后跑 `compose up --wait` + 断连/恢复三态。
+> - **2026-11-10 复核**：Docker 引擎**仍不可用**（`docker info` → `open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified.`，退出码 -1）；`docker compose -f deploy/compose.yaml config -q` 文本腿沿用 2026-11-07 的 EXIT=0。⑤② 唯一缺口未变，本单维持 🔶（不虚标）。
 
 ### SVC-RISK-G2 · 服务就绪门 G2：`risk.*` 唯一 writer 与可重放迁移（ADR-036）[P0] ✅（2026-11-07 真库重放腿补跑通过）
 
@@ -731,7 +758,7 @@ verified-by: QT-42 补丁 —— PG Store 审批跃迁修复（`updateRule` 先�
 > - **门禁**：`gofmt -l .` 空输出（`gofmt -w` 该新文件后复核）、两用例同批 `EXIT=0`；未加依赖、未改生产代码。
 > - **判定**：⑤① 两条用例、⑤② 老行可读、⑤③ 重放指纹、⑤④ 文档同步（先前已落）、⑤⑤ 三条命令绿 —— 五条全部有当前证据，**本单翻 ✅**。
 
-### SVC-RISK-G4 · 服务就绪门 G4：开关默认值 · 回传失败语义 · runbook（ADR-036）[P1] 🔶
+### SVC-RISK-G4 · 服务就绪门 G4：开关默认值 · 回传失败语义 · runbook（ADR-036）[P1] ✅（2026-11-10 core 侧停服演练补齐）
 
 - **① 目标**：把「本仓不可达时 core 会怎样」「事件回传开关关着时监控端点的空集是设定还是故障」成文，并给出可执行的运维手册。
 - **② 上下文**：core 侧两条开关出厂为 `false`（`config/analysis-service.yaml:122` 的 `resolve_enabled`；`events_enabled` 同批默认关），因此 `monitor/alerts` / `monitor/evaluate` 在默认部署下**必然是空集**——这不是缺陷而是设定，但今天只散落在两仓的施工记录里；本仓侧失败语义已有（全端点 fail-closed，未装配 Authorizer 时 **503 拒绝而非放行**，这是正确姿势）；缺 `/readyz`（属 `SVC-RISK-G1` ①）、缺超时/重试口径、缺 runbook（全 workspace `runbook` 只在 ADR-036 正文出现）。
@@ -754,6 +781,11 @@ verified-by: QT-42 补丁 —— PG Store 审批跃迁修复（`updateRule` 先�
 > - **破坏验证**：把 `monitor.go` 的 `Configured: s.eventIngestConfigured` 改成 `Configured: true` → `TestMonitor_EmptySetIsDiscriminable/未接入` 红（`configured = true, want false`，`BREAK_TEST_EXIT=1`）；逐字节还原后 sha256 `C067783A7F36C66B43F40D93AF6282A75F9EB619B25723CD32835B8E6D2BD217` 前后一致，复跑 PASS（`RESTORE_TEST_EXIT=0`）。
 > - **门禁**：`gofmt -l .` 无输出 / 退出 0；`go build ./...` 0；`go vet ./...` 0；`go test ./... -count=1` 0（`internal/pgstore` 的 `TestMigrationReplay_Integration` SKIP：`RISK_TEST_DSN not set`，不是假绿）。
 > - **剩余腿（故记 🔶）**：core 侧停仓演练、真 PG 的 PG 不可达 / 迁移重放、Docker 起停。补齐前置：起临时 PG（约定端口 5445）+ 可运行的 core 分析服务。
+
+> **施工记录（2026-11-10 · core 侧停服演练补齐，翻 ✅）**
+> - ⑤③ 的「停服前后 core 侧各一次」本轮以**真进程 + 真 PG** 跑通：停服前 core `RiskEventSink` 投递 `sent:1 / accepted:1`、risk `monitor/alerts` 读到 `count:1` 真实行；停服后（探针 `000`）relay 连续三次报 `POST failed, batch stays pending in the outbox`，outbox 行最终 `status=failed, attempts=3`、`last_error` 留原文。证据（含库名、监听端口、行内容）与清理记录见本文件 `SVC-RISK-G3` 的 2026-11-10 施工记录 ④。
+> - ⑤①/⑤②/⑤④/⑤⑤ 沿用 2026-11-07 记录（失败语义五类 / `TestMonitor_EmptySetIsDiscriminable` / runbook 实跑 / 三条命令绿）；真 PG 的 PG 不可达与迁移重放由 `SVC-RISK-G2` 2026-11-07 真库腿覆盖。
+> - 仍未做但**不在本单 ⑤**：Docker 起停与 compose 探针实跑（归 `SVC-RISK-G1` ⑤②，本机 Docker 引擎 2026-11-10 仍不可用）。
 
 ## 施工序（候选单，开工前必须展开成六字段）
 
