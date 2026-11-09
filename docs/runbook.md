@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-11-07
-verified-by: SVC-RISK-G4 —— 起停 / 探针 / 审计读 / 空集判别 / 停服演练在本机（Windows PowerShell 5，内存档）实跑；真 PG、Docker、core 侧腿未执行
+last-verified: 2026-11-10
+verified-by: SVC-RISK-G4 / SVC-RISK-G2 —— 起停 / 探针 / 审计读 / 空集判别 / 停服演练在本机（Windows PowerShell 5，内存档）实跑；2026-11-10 起真 PG 腿（本机 PostgreSQL 16.15 @ `127.0.0.1:5432`）已补齐：迁移重放、psql 审计读、psql 熔断指令读、`go test ./...`；Docker / compose 腿仍未执行（引擎不可用）
 ---
 
 # Runbook — tellurion-risk
@@ -73,7 +73,9 @@ psql "$RISK_DATABASE_URL" -c "SELECT seq,rule_id,revision,action,actor,at FROM r
 ```
 
 - 审计是**人操作留痕**；`POST /events` 不写这张表（事件自己的 actor 在 `risk.risk_events.actor`）。
-- 本机无 PG ⇒ psql 腿**未执行**。
+- `[已执行 2026-11-10]` psql 腿在本机 PostgreSQL 16.15（库 `tellurion_risk_test`，服务 `127.0.0.1:18093`
+  以 `RISK_DATABASE_URL` 连真库）上跑通：建 `r-sl` → 201、审批 → 200，psql 读回两行
+  `5|r-sl|1|create|open-access` 与 `6|r-sl|1|approve|open-access`，退出码 0。
 
 ## 3. 重放迁移
 
@@ -96,7 +98,13 @@ RISK_TEST_DSN='postgres://user:pass@127.0.0.1:5432/tellurion_risk_test?sslmode=d
   go test ./internal/pgstore -run TestMigrationReplay -count=1
 ```
 
-- 未设 `RISK_TEST_DSN` 时该用例 **skip**（不是假绿）。本机无 PG ⇒ 本次**未执行**。
+- 未设 `RISK_TEST_DSN` 时该用例 **skip**（不是假绿）。
+- `[已执行 2026-11-10]` 本机 PostgreSQL 16.15（`127.0.0.1:5432`，库 `tellurion_risk_test`）：
+  `RISK_TEST_DSN=... go test ./internal/pgstore -count=1 -v` → 全部 PASS（含 `TestMigrationReplay_Integration`），
+  重放指纹 `rows=0829cbeb6b6a8ba6375d827f007dded6032691dec8b39d4c72fd29271cb183ff` /
+  `indexes=65c95b0b7fe2dde6ba482b7388f2669a64202afb61cb2cdbc08f7512d2a3d529` /
+  `columns=e60fe69414d3914b6c2ca3ec4123de0140b062ac69e7bd5ca91724647ab75075`，退出码 0；
+  同 DSN 下 `go test ./... -count=1` 6 包全 ok、退出码 0。
 - 禁止手写 `ALTER` 后不回写 `internal/rule/ddl.go`：DDL 唯一真相源是 `rule.Migrations()`。
 
 ## 4. 熔断：人工解除
@@ -122,7 +130,9 @@ curl -sS -X POST http://127.0.0.1:8089/api/risk/breakers \
 4. 若要让「解除」成为本仓一等动作：另立单扩 `action` 枚举（MINOR）+ 执行方 ACK 语义 + ADR；
    **不在故障现场顺手加**。
 
-- 本机无 PG ⇒ psql 查询**未执行**；`POST /breakers` 演练中未调用（会落一行 applied，不产生副作用）。
+- `[已执行 2026-11-10]` 真库演练：`POST /breakers`（`breaker_id=manual-20261110-1`、`halt`/`global`、
+  带 `ts`）→ 200 `{"status":"applied"}`；psql 读回 `manual-20261110-1|halt|global|drill|2026-11-10 11:00:00+01|applied`，
+  退出码 0。`ts` 是必填字段（缺它 → 400 `invalid_params`），这是本轮实测撞到的第一处口径。
 
 ## 5. 开关核对（变更后 / 告警空集时）
 
@@ -190,4 +200,6 @@ curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:18089/api/risk/
 - 期望：停服前 `resolve` 200 / `events` 200；停服后两条都 **curl exit 7 + HTTP 000**。
 - **禁止**任何「回落默认限额 / 空集 200」的通过口径。
 - 自动版：`go test ./internal/httpapi -run TestDrill_StoppedServiceFailsLoud -count=1 -v`。
-- 本次真跑输出与退出码贴在 `docs/TASKS.md` G4 施工记录；core 侧那半**未执行**（跨仓 + 本机无 PG）。
+- 本次真跑输出与退出码贴在 `docs/TASKS.md` G4 施工记录；core 侧那半**已于 2026-11-10 补齐**（core `RiskEventSink`
+  + relay，停服前 `sent:1/accepted:1`、停服后三次失败后 outbox `status=failed, attempts=3`），证据见
+  `docs/TASKS.md` `SVC-RISK-G3` 的 2026-11-10 施工记录 ④。
