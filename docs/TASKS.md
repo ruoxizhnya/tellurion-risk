@@ -332,6 +332,8 @@ verified-by: `SVC-RISK-G3` 收口（2026-11-10：core `risk_manager.*` 读点 14
 > 6. `rule_deprecated` 错误码不可达（冻结接口面无 deprecate 端点）。
 > 7. **core 侧消费接线（跨仓）**：F3 **订正**（2026-10-25）—— ✅ `risk_rules_hash` 生产者已落真值（core QT-66，账在 `tellurion:docs/TASKS.md`）；⬜ `bundle` → `ParseBundle` → 构建 `RiskPolicy` 半边仍待。不在本仓施工。
 
+> **未落项复核（2026-11-10）**：上列 7 条中 6 条已由后续单关闭 —— 1 已实装（`risk.circuit_orders` + `POST /breakers`，见下方 X3d 施工记录）；2 已实装（监控 3 端点，U7 已于 2026-10-24 裁为「检测器留 core、通道编排归本仓」）；3 已关闭（鉴权 ADR-0005/0006 + `risk_events.actor` 见 QT-80）；4 已裁（`risk.limits` 遗留空表、无生产者，见 `SVC-RISK-G2` ③）；5 已关闭（`GET /api/risk/audit` 已有对外读面，`viewer/trader/admin` 可见）；7 已关闭（core `SVC-CORE-RISK-RETIRE` ✅ 2026-11-09）。**仍剩 1 条**：X3d 的「执行方 / ACK」——本仓只落指令存储与幂等，真正执行 halt/cancel_all 的消费方尚不存在（跨仓、无受理单）。故本单维持 🔶：① 目标「规则真相源 + 同一 RiskPolicy」已达成，③ 的「熔断指令走异步」只到投递面。
+
 > **施工记录（2026-10-24 · X3d 熔断指令）**
 >
 > 已交付（本仓）：
