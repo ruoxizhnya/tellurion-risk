@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-11-10
-verified-by: SVC-RISK-G4 / SVC-RISK-G2 —— 起停 / 探针 / 审计读 / 空集判别 / 停服演练在本机（Windows PowerShell 5，内存档）实跑；2026-11-10 起真 PG 腿（本机 PostgreSQL 16.15 @ `127.0.0.1:5432`）已补齐：迁移重放、psql 审计读、psql 熔断指令读、`go test ./...`；Docker / compose 腿仍未执行（引擎不可用）
+verified-by: SVC-RISK-G4 / SVC-RISK-G2 —— 起停 / 探针 / 审计读 / 空集判别 / 停服演练在本机（Windows PowerShell 5，内存档）实跑；2026-11-10 起真 PG 腿（本机 PostgreSQL 16.15 @ `127.0.0.1:5432`）已补齐：迁移重放、psql 审计读、psql 熔断指令读、`go test ./...`；Docker / compose 腿同日补跑通过（`up --wait` 到 healthy + 断连/恢复三态）
 ---
 
 # Runbook — tellurion-risk
@@ -44,7 +44,10 @@ docker compose -f deploy/compose.yaml ps
 docker compose -f deploy/compose.yaml stop
 ```
 
-- 本机 Docker 引擎不可用 ⇒ 本节**未执行**（见 `docs/TASKS.md` G4 施工记录）。
+- `[已执行 2026-11-10]` Docker 引擎 `29.8.0`：本机 PG 只放行 loopback，故用临时 override 把 `RISK_DATABASE_URL` 指向同网络内的 `postgres:16-alpine`（`depends_on: service_healthy`），
+  `docker compose -f deploy/compose.yaml -f <override> up --build --wait` → **EXIT=0**，`pg` / `risk` 双 `healthy`；
+  `/healthz` 200 `{"status":"ok"}`、`/readyz` 200 `{"status":"ready"}`；停 pg 后 `/readyz` 503，pg 恢复后 200（未重启 risk）。
+  证据与完整输出见 `docs/TASKS.md` `SVC-RISK-G1` 2026-11-10 施工记录。
 
 ### 1.4 停服与确认
 
