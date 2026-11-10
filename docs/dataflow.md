@@ -98,8 +98,11 @@ run 后逐笔裁决事件回传、`POST /events` 的审计留痕（`risk_events.
 `account` / `strategy` / `symbol` 三档规则照样进快照（`Bundle.ForScope` 里可见、`bundle` 字节里也真实存在）。
 这是**显式口径，不是静默忽略**：回测没有账户身份是事实（不是缺陷），但「下发了却没用」必须看得见。
 未参与裁决的档位**不**做任何默认值兜底（没有 global / strategy 规则 = 拒绝开跑）。
-> ⚠️ 跨仓待确认：`strategy` 回退是 core 侧实现口径（`SVC-CORE-RISK-RETIRE` 之后），与 QT-74 ④ 的
-> 「只消费 global」不同。本文件记录**实测事实**，是否把回退升为正式口径待主任确认（不擅自改本仓实现）。
+> **契约（2026-11-11 主任裁决，正式口径）**：`global → strategy` 回退是**正式契约**——global 提供组合级基线，
+> strategy 提供单策略覆盖；有专属规则就用专属、没有就回落，这是正常优先级语义。`QT-74 ④` 的「只消费 global」
+> 只描述当次实现范围，**不是设计约束**。契约要求：① 选中 scope 内**四类规则各恰好一条**（缺一类或同类多条 ⇒ 拒，歧义不猜）；
+> ② 无 global 且无 strategy ⇒ **fail-closed 拒开跑**；③ `account` / `symbol` 仍不参与进程级策略源；④ 每类 params 严格解码，
+> 未知键即拒。`contracts/risk` 侧的同步说明归 contracts 仓（移交清单第 1 项），本仓不改契约仓。
 
 ### run 中（热路径，零网络）—— 边界已备，core 接线未做
 
