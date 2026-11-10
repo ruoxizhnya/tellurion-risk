@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-26
-verified-by: QT-74 规则参数字典落链路口径（写侧严格 / 读侧只拒未知键 / scope 只消费 global 的显式声明）
+last-verified: 2026-11-11
+verified-by: 2026-11-11 文档对齐审计 —— `SVC-CORE-RISK-RETIRE`（2026-11-09）后 core 消费走 `contracts/risk` + `risk.PolicyFromSnapshot`（不经 `ParseBundle`）、`risk_manager.*` 已删、`resolve_enabled` 出厂 `true`、scope 选择实测（global → strategy）、`risk_events.actor` 已落；此前 QT-74 参数字典口径
 ---
 
 # Dataflow — tellurion-risk
@@ -18,31 +18,34 @@ tellurion-risk  ── 写 risk.rule_defs / risk.rule_revisions / risk.audit_log
    │
    │  ④ resolve / bundle（run 前 1 次）            ✅ X3b（快照内容寻址 + ParseBundle）
    ▼
-core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 半边已落（2026-10-25）：
+core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络；`CheckOrder` 至今仍是 stub）  ✅ 2026-11-09：
    │                                                        ✅ QT-66 —— run 提交时调 resolve 取 hash
    │                                                           写进 `quant.run_provenance`（F3 的 hash 半边关闭）
-   │                                                        ⬜ bundle → `rule.ParseBundle` → 构建 RiskPolicy
-   │                                                           **仍未接**：core 用的是自己的 `risk_manager.*` 配置
+   │                                                        ✅ 限额装配 —— resolve 内联 `snapshot`
+   │                                                           → `contracts/risk.Verify()` + `risk.PolicyFromSnapshot`
+   │                                                           （**不经**本仓 `ParseBundle`；`risk_manager.*` 已删）
    └── 异步事件回传 ──►  POST /api/risk/events ──►  risk.risk_events   ✅ X3c（批量 + 去重键 + 207）
                                                           │
                                                           └──► monitor/{exposure,alerts,evaluate}
                                                                只读聚合 / 报表   ✅（2026-10-24，ADR-0004）
 ```
 
-**现状（2026-10-25 订正）**：左上半段（规则真相源 ①~③）、快照读侧（④ resolve / snapshots / bundle）、
+**现状（2026-11-11 订正）**：左上半段（规则真相源 ①~③）、快照读侧（④ resolve / snapshots / bundle）、
 事件回传（批量 + 去重键 + 207）与监控三端点（只读聚合 / 报表）已实现，持久化有 Memory 与 PG（事务边界见 ADR-0003）；
-**告警生产侧接线（core `alertLoop` → `POST /events`）已于本日落地**（`tellurion:docs/TASKS.md` QT-42 X3c core 腿）。
-**F3 要拆成两半读**：hash 半边已落（QT-66：run 提交时调 `POST /api/risk/resolve`，把 `risk_rules_hash` 写进
-`quant.run_provenance`，空串只剩 `not_configured` 一种合法含义）；**bundle 半边仍未接** —— core 全仓 `ParseBundle`
-零调用点，进程内 `RiskPolicy` 的限额今天来自 `config/analysis-service.yaml` 的 `risk_manager.*`，不是快照。
+**告警生产侧接线（core `alertLoop` → `POST /events`）已于 2026-10-25 落地**（QT-42 X3c core 腿）。
+**F3 两半都已关闭**（2026-11-09 `SVC-CORE-RISK-RETIRE`）：hash 半边（QT-66 —— run 提交时调
+`POST /api/risk/resolve`，把 `risk_rules_hash` 写进 `quant.run_provenance`，空串只剩 `not_configured` 一种合法含义）；
+兜底半边 —— core 走 `resolve` 的**内联 `snapshot`**（不是 `GET .../bundle`）→ `contracts/risk.Verify()` 重新 derive hash
+→ `risk.PolicyFromSnapshot` 构建进程内 Policy；`config/analysis-service.yaml` 的 `risk_manager.*` 已整段删除。
 `risk_events` 今天的**唯一生产者是告警流**：
 `verdict:"alert"`、`run_id="core:alert-loop"`、`order_id=Alert.ID`、`event_seq=0`，落点
 `core:cmd/analysis/wiring/risk_events.go`，开关 `risk_service.events_enabled`（**默认关** —— 关着的部署里
-`alerts` / `evaluate` 空集是设定，不是缺陷；G4 起响应带 `configured:false` 可判别，不再靠猜）。仍待：bundle → `ParseBundle` → `RiskPolicy`（F3 剩余半边）、
-熔断执行方、run 后逐笔裁决事件回传、`POST /events` 的审计留痕（`risk_events` 无 actor 列）、
-外部推送通道。**投递形态已于 2026-10-25 二批改为持久 outbox**（core 的 `quant.alert_outbox` +
+`alerts` / `evaluate` 空集是设定，不是缺陷；G4 起响应带 `configured:false` 可判别，不再靠猜）。仍待：熔断执行方、
+run 后逐笔裁决事件回传、`POST /events` 的审计留痕（`risk_events.actor` 已由 QT-80 落列并写入，仍不写 `risk.audit_logs`）、
+外部推送通道。`bundle` 端点今天零消费方（core 用 resolve 内联快照），保留为仓内边界与将来消费方备用。
+**投递形态已于 2026-10-25 二批改为持久 outbox**（core 的 `quant.alert_outbox` +
 后台 relay 重投），本仓那句「允许延迟、不允许丢」不再只是端点侧的承诺 —— 逐条限制见下方
-「事件回传失败」行与 `docs/TASKS.md` QT-42 施工记录。
+「事件回传失败」行与 `docs/TASKS.md`。
 
 **服务间凭证（2026-10-25，裁-17 + ADR-0006）**：图里 core → 本仓的两条边
 （`POST /api/risk/resolve` 与 `POST /api/risk/events`）是**机器发起**的，鉴权上走
@@ -68,7 +71,7 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
    追加 `approve` 审计。重放已 active 的同一 revision 幂等返回。
 4. `GET /api/risk/rules`：只读，不产生版本；列表项 `status` 取 head revision 的状态，`active_revision` 取定义指针。
 
-### run 前（粗粒度，一次）—— ✅ X3b（快照侧）；core 侧接线未做
+### run 前（粗粒度，一次）—— ✅ X3b（快照侧）；core 侧接线已落（2026-11-09）
 
 5. 调用方 `POST /api/risk/resolve`（`{"hash": ...}` **或** `{"ruleset": "latest"}`，二选一；
    都给 / 都不给 / ruleset 非 latest → 400 `invalid_params`）
@@ -78,21 +81,25 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
    没有任何生效规则 → 404 `no_approved_rules`（拒绝启动，不许用默认限额）
 7. 钉 hash：按 hash 取历史快照；不存在 → 404 `snapshot_not_found`，**不回退 latest**
    （拿不到就拒绝开跑，不许用「现在生效的」顶替「当初锁定的」）
-8. `GET /api/risk/snapshots/{hash}/bundle` 拉规则包（= canonical snapshot JSON）→
-   进程内 `rule.ParseBundle`：重新 derive hash 比对（不符 fail-closed）+ 未知 type/scope 拒收
-   → core 侧据此构建 `RiskPolicy`（**接线未做**：core 全仓 `ParseBundle` 零调用点，限额来自它自己的
-   `risk_manager.*` 配置 —— F3 的剩余半边）
+8. core 实际走 `POST /api/risk/resolve` 的**内联 `snapshot`**（不是 `GET .../bundle`）→
+   `contracts/risk.Verify()` 重新 derive hash 比对（不符 fail-closed；`DisallowUnknownFields` 拒未知顶层字段）+ 未知 type/scope 拒收
+   → `risk.PolicyFromSnapshot` 构建进程内 `Policy`。**不再经过本仓 `rule.ParseBundle`**（它仍是仓内边界，
+   `bundle` 端点今天零消费方）。失败口径：`resolve_enabled: true`（出厂默认）时取不到即**启动失败**，
+   不回落 `risk_manager.*`（该配置块已删）；只有部署显式 `false` 才用 `risk.BuiltinPolicy()` 并打 Warn。
 9. 该 hash 写入本次 run 的结果（可复现锚点）——**已落**（2026-10-25，QT-66：core 每次 run 提交时调
    `POST /api/risk/resolve` 取 hash 写进 `quant.run_provenance.risk_rules_hash`；未接入记空串 +
    `not_configured`，取不到即 run `failed` + `risk_rules_unavailable`）
 
-### scope 消费口径（QT-74 ④，2026-10-26）
+### scope 消费口径（2026-11-11 实测 core `pkg/risk/policy.go`；QT-74 ④ 原口径为只消费 global）
 
-**一期 core 只消费 `scope = global`**。`account` / `strategy` / `symbol` 三档规则照样进快照
-（`Bundle.ForScope` 里可见、`bundle` 字节里也真实存在），但**本 run 不参与裁决**。
-这是**显式口径，不是静默忽略**：回测没有账户身份是事实（不是缺陷），但「下发了却没用」必须看得见
-—— 消费方按 `ForScope(global)` 取规则，其余三档的可见性留给将来的账户态 / 组合级风控。
-未参与裁决的档位**不**做任何默认值兜底（找不到 `global` 规则 = 拒绝开跑）。
+**core 的选择顺序：优先 `scope = global`；没有 global 规则时退回 `strategy`**；`account` / `symbol`
+不参与进程级策略源（`pickScope` 两者皆无 ⇒ 拒绝装配）。选中 scope 内**四类规则各恰好一条**——
+缺一类或同类多条 ⇒ 拒（歧义不猜），每类 params 按冻结键名严格解码，未知键 ⇒ 拒。
+`account` / `strategy` / `symbol` 三档规则照样进快照（`Bundle.ForScope` 里可见、`bundle` 字节里也真实存在）。
+这是**显式口径，不是静默忽略**：回测没有账户身份是事实（不是缺陷），但「下发了却没用」必须看得见。
+未参与裁决的档位**不**做任何默认值兜底（没有 global / strategy 规则 = 拒绝开跑）。
+> ⚠️ 跨仓待确认：`strategy` 回退是 core 侧实现口径（`SVC-CORE-RISK-RETIRE` 之后），与 QT-74 ④ 的
+> 「只消费 global」不同。本文件记录**实测事实**，是否把回退升为正式口径待主任确认（不擅自改本仓实现）。
 
 ### run 中（热路径，零网络）—— 边界已备，core 接线未做
 
@@ -142,7 +149,7 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
 | 未审批规则被当成生效版本 | 生产用上草稿 | 只有 `active_revision` 可达 runtime；`draft` 永不进快照 | ✅（状态机 + DDL CHECK） |
 | 并发写同一 rule_id | 丢更新 / 双 active | Service 的读-改-写全部在 `Store.Tx` 内：PG 用 `SELECT ... FOR UPDATE` 行锁，Memory 用全量快照回滚；失败整笔回滚 | ✅（ADR-0003；`TestServiceApprove_RollsBackAllWritesOnFailure` / `TestMemoryTx_RollsBackAllWrites`） |
 | 快照 hash 与内容不符（写入 / 读取 / ParseBundle） | 内容寻址被破坏（缓存串号 / 内容被改） | `ErrSnapshotMismatch`，500 `internal` + 告警日志，fail-loud 不吞 | ✅（三处同检：`store.go` 写/读 + `ParseBundle`） |
-| 服务不可用 | 拿不到规则快照 | **拒绝开跑**（不许用默认限额） | ✅（resolve 侧：`no_approved_rules` / `snapshot_not_found` 拒绝；core 接线后由调用方执行） |
+| 服务不可用 | 拿不到规则快照 | **拒绝开跑**（不许用默认限额） | ✅（resolve 侧：`no_approved_rules` / `snapshot_not_found` 拒绝；core 已接（2026-11-09），`resolve_enabled: true` 时启动期取不到即失败） |
 | 规则被改但 run 里没记 hash | 结果不可复现 | `risk_rules_hash` 必写进结果 | ✅（2026-10-25，QT-66 的 core 腿：`core:cmd/analysis/wiring/risk_rules.go` 每次 run 取一次并写进 `quant.run_provenance`；未接入 = 空串 + `not_configured`，取不到 = run `failed`） |
 | 事件回传失败 | 留痕缺失 | 批量原子落库：整批失败 500 后重试整批（去重键幂等）；单条不合法 207 只重发 failed；允许延迟，不允许丢 | ✅ 两侧都兑现（2026-10-25 二批）：端点侧 `internal/event` + `risk.risk_events` 主键去重；生产侧 core 的 sink 改成**持久 outbox**（`quant.alert_outbox`，core Migration 060）——告警先落一行，relay 每 `events_relay_interval` 取 pending 重投，触 `events_max_attempts` 转 `failed` 终态**但保留行**，不再有「队列满即丢 / 重启即丢」。**两条残留如实登记**：① `alert_id` 撞键（同秒重启能造出同 id 的两条告警）的那条不落新行，core 侧转 Warn 点名，若既有行已是 `failed` 则这条到不了本仓；② 「core 真进程 → risk 真进程 → `monitor/alerts` 读出非空」的端到端腿仍未跑过（core 侧用 `httptest` + 内存替身按 wire 逐键自证）。见 `tellurion:docs/TASKS.md` QT-42 X3c core 腿二批 |
 | 熔断指令重复 | 重复平仓 | 幂等键 `breaker_id`：同键同载荷 → 200 `already_applied`；同键不同载荷 → 409（不执行） | ✅（X3d：`internal/breaker` + `circuit_orders` 主键） |
@@ -150,7 +157,7 @@ core 进程内 RiskPolicy  ◄── 每笔 CheckOrder（不走网络）   🔶 
 | core 调本仓没带 `service` 凭证 | run 前取快照失败 ⇒ 按裁-11 该 run `failed` + `risk_rules_unavailable` | 策略表对 `resolve` / `events` 并列开 `service`（与 `trader` / `admin` 同在一条 `Roles`）；`audit` 与管理面不开 | ✅（2026-10-25 裁-17 + ADR-0006；`TestPolicy_ServiceRoleScope`）。**签发与注入不在本仓**（core QT-71 / kit KT-09） |
 | 监控读不到事件（读取端口未装配 / 库错误） | 把「读不到」显示成「没有敞口 / 没有告警」 | `503 dependency_unavailable` 或 500；绝不返回空报告冒充成功 | ✅（`event.ErrMonitorUnavailable`；`TestMonitor_RequiresReader` / G4 的 `TestMonitor_PGUnreachableIsNotEmptySet`） |
 | 空集不可判别（未接入 vs 没触发） | 把「core 没接」读成「没触发」或反向 | 三个 monitor 响应都带 `configured` 判别位（部署声明 `RISK_EVENTS_EXPECTED`，缺省 false）；`false` = 未接入，`true`+空 = 没触发 | ✅ G4（`TestMonitor_EmptySetIsDiscriminable`；契约见 `api-schema.md` §1「空集的两种含义」） |
-| 本仓停服 / 不可达（core 两条腿） | 裁决链断 | `resolve` 腿：连接错误 / 超时 / 非 2xx ⇒ run **failed**，**不重试、不回落本地 `risk_manager.*`**；`events` 腿：连接错误 ⇒ 持久 outbox 重投（去重键幂等），不阻塞 run | ✅ 本仓侧已证（`TestDrill_StoppedServiceFailsLoud`：停服后两条腿都拿到 `connection refused`）；core 侧演练**未执行**（跨仓 + 本机无 PG），见 `TASKS.md` G4 |
+| 本仓停服 / 不可达（core 两条腿） | 裁决链断 | `resolve` 腿：连接错误 / 超时 / 非 2xx ⇒ 启动/run **failed**，**不重试、不回落 `risk_manager.*`**（已删；`resolve_enabled=false` 才走 builtin 并打 Warn）；`events` 腿：连接错误 ⇒ 持久 outbox 重投（去重键幂等），不阻塞 run | ✅ 本仓侧已证（`TestDrill_StoppedServiceFailsLoud`）；core 侧演练已执行（2026-11-10，`SVC-RISK-G4` 收口：停服前后各一次真退出码） |
 | 敞口字段缺口 / 窗口过大 | 低报风险 | 缺字段计入 `unpriced_events` / `unsigned_events`（不补零）；窗口 > 5000 条事件 → 400，不截断 | ✅（`TestExposure_AggregatesFromRiskEvents` / `TestExposure_RefusesTruncatedAggregate`） |
 | 告警事件投影非法 | 非法告警被静默吞掉 | 计入 `invalid_events`，不进入列表；严重度词表外同样计非法 | ✅（`TestAlerts_ProjectsAndSortsFromRiskEvents`） |
 | 汇总建立在截断数据上 | 少算告警 | `evaluate` 触到 limit → 400；`alerts` 分页截断显式 `truncated` | ✅（`TestEvaluate_ReportsWithoutWritingOrDetecting`） |

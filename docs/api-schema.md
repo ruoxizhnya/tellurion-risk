@@ -1,12 +1,12 @@
 ---
 status: active
-last-verified: 2026-11-07
-verified-by: G1 施工 —— `/healthz` `/readyz`、限流（429 与 401 可区分、探针豁免）、错误码闭合表、幂等语义与分页/版本策略写入 §1；真实 PG 就绪与 compose --wait 未跑。G4 施工（2026-11-07）—— 监控响应加 `configured` 判别位、失败语义五类、core→risk 超时/重试口径、`docs/runbook.md`；真实 PG / 容器腿与 core 侧演练未跑
+last-verified: 2026-11-11
+verified-by: 2026-11-11 文档对齐审计 —— `SVC-CORE-RISK-RETIRE`（2026-11-09）与 `SVC-RISK-G2/G3/G4`（2026-11-10）收口后校准：探针腿已真跑、core 消费走 `contracts/risk` + `risk.PolicyFromSnapshot`（不经 `ParseBundle`）、`risk_manager.*` 已删；此前 G1 施工（`/healthz` `/readyz`、限流、错误码闭合表）+ G4 施工（`configured` 判别位、失败语义五类）
 ---
 
 # API Schema — tellurion-risk
 
-> **实现状态（2026-10-25，2026-11-07 补 G1）**：**规则管理 4 端点 + 快照 3 端点 + 审计读 1 端点 + 事件回传 1 端点 +
+> **实现状态（2026-10-25，2026-11-07 补 G1，2026-11-10 收口 G2/G3/G4）**：**规则管理 4 端点 + 快照 3 端点 + 审计读 1 端点 + 事件回传 1 端点 +
 > 熔断 1 端点 + 监控 3 端点已落地，且全部过鉴权闸**；**公开探针 `/healthz` / `/readyz` 与按身份限流已落（G1，2026-11-07）**
 > （`POST /rules`、`PUT /rules/{id}`、`POST /rules/{id}/approve`、`GET /rules`、`POST /resolve`、
 > `GET /snapshots/{hash}`、`GET /snapshots/{hash}/bundle`、`GET /audit`、`POST /events`、`POST /breakers`、
@@ -37,7 +37,9 @@ verified-by: G1 施工 —— `/healthz` `/readyz`、限流（429 与 401 可区
 > 开关打开的部署里有数据，关着的部署里空集是**设定**而非缺陷。
 > ② **core 侧消费接线（F3）**：QT-66 已落 —— core 每次 run 提交时调 `POST /api/risk/resolve`，把
 > `risk_rules_hash` 写进 `quant.run_provenance`；该列不再恒空串（空串只剩「本部署未接入」一种合法含义，
-> 记 `not_configured`）。未落项逐条登记在 `docs/TASKS.md` QT-42 施工记录。
+> 记 `not_configured`）。**限额装配侧也已接（2026-11-09，`SVC-CORE-RISK-RETIRE`）**：core 走 `resolve` 内联
+> `snapshot` → `contracts/risk.Verify()` + `risk.PolicyFromSnapshot`（**不经**本仓 `ParseBundle`；`risk_manager.*` 已删）。
+> QT-42 施工记录已归档（`docs/archive/tasks-archive-2026-11.md`），剩余 3 项见 `docs/TASKS.md`。
 >
 > 本文件是**目标契约 + 现状**：已实现的行以代码为准，未实现的行是欠账，不允许把欠账当现状描述。
 
@@ -48,7 +50,7 @@ verified-by: G1 施工 —— `/healthz` `/readyz`、限流（429 与 401 可区
 
 ## 1. 接口面
 
-### 服务探针与请求治理（G1）—— ✅ 已实现（2026-11-07，真实 PG / compose 腿未跑）
+### 服务探针与请求治理（G1）—— ✅ 已实现（2026-11-07；真实 PG / compose 腿 2026-11-10 真跑）
 
 | 方法 | 路径 | 用途 | 鉴权 |
 |---|---|---|---|
@@ -148,7 +150,7 @@ verified-by: G1 施工 —— `/healthz` `/readyz`、限流（429 与 401 可区
 |---|---|---|---|
 | POST | `/api/risk/resolve` | 规则集引用（锁定 hash 或 latest，二选一）→ 快照元数据 `{risk_rules_hash, snapshot}` | ✅ |
 | GET | `/api/risk/snapshots/{hash}` | 取规则快照（同一 hash 两次拉取**字节一致**；按 hash 缓存永不失效） | ✅ |
-| GET | `/api/risk/snapshots/{hash}/bundle` | 拉规则包（run 前 1 次；body = canonical snapshot JSON，`rule.ParseBundle` 直接吃） | ✅ |
+| GET | `/api/risk/snapshots/{hash}/bundle` | 拉规则包（run 前 1 次；body = canonical snapshot JSON；消费方自行 derive 校验。今天 core 用 `resolve` 内联 `snapshot`，**本端点零消费方**） | ✅ |
 | POST | `/api/risk/events` | 回传裁决事件（异步批量，**非热路径**） | ✅ X3c（2026-10-24） |
 | POST | `/api/risk/breakers` | 下发熔断指令（幂等键） | ✅ X3d（2026-10-24） |
 
@@ -333,7 +335,7 @@ verified-by: G1 施工 —— `/healthz` `/readyz`、限流（429 与 401 可区
 | 运行期 PostgreSQL 不可达（读 / 写 / 聚合） | 500 `internal`（不吐原文）；启动期则进程不监听、`/readyz` 503 | 按**服务不可用**处理：查 `/readyz`；只对幂等请求重试；`resolve` 腿失败 ⇒ run 拒绝启动 |
 | 规则库为空（`GET /rules`） | 200 `{"rules":[],"count":0}`（**不是错误**，也**不是** `null`） | 先建规则并审批；空库**不许**用默认限额开跑 |
 | 规则库有规则但无生效（approved/active）版本（`resolve latest`） | 404 `no_approved_rules` — ✅ `TestAPI_ResolveWithoutApprovedRules` | 审批激活后**重新发起一次**（人工动作，不是传输层自动重试） |
-| bundle 内参数出现词典外未知键 | **本仓不产生**（`GET .../bundle` 只回 canonical 快照原文，写侧已严格拒未知键）；若发生，消费方进程内 `rule.ParseBundle` 返回 `rule.ErrInvalidParams`（无 HTTP 码） | **拒绝开跑、不重试**；回查历史快照来源 / 是否手工改库 |
+| bundle 内参数出现词典外未知键 | **本仓不产生**（`GET .../bundle` 只回 canonical 快照原文，写侧已严格拒未知键）；若发生，消费方 core 的 `risk.PolicyFromSnapshot` 严格解码返回 error（无 HTTP 码；本仓 `rule.ParseBundle` 同样 fail-closed） | **拒绝开跑、不重试**；回查历史快照来源 / 是否手工改库 |
 | 监控时间窗非法（`from >= to` / 超 7 天）、事件数或告警数超上限 | 400 `invalid_params` — ✅ | 缩小窗口 / 降低 limit 后重试 |
 | 规则类型不在冻结枚举 | 400 `invalid_rule_type` | 修正请求，不重试 |
 | 参数非法（非 JSON 对象 / 空 / 超 64 KiB）、scope 非法、请求体非法 | 400 `invalid_params` | 修正请求，不重试 |
@@ -391,7 +393,7 @@ verified-by: G1 施工 —— `/healthz` `/readyz`、限流（429 与 401 可区
 
 | 腿 | 调用时机 | 超时 | 重试 | 失败语义 |
 |---|---|---|---|---|
-| `POST /api/risk/resolve`（`risk_rules_hash` 腿） | 每次 run 提交前 **1 次** | core 侧 `risk_service.resolve_timeout`（core 缺省 10s，归 `tellurion:QT-77` / `SVC-CORE-RISK-RETIRE` ④；本仓不双写该值，也不设客户端超时） | **禁止自动重试**（含超时、5xx、连接错误） | run **fail loudly**（如 `risk_rules_unavailable`），**禁止**回落本地 `risk_manager.*` 或默认限额 |
+| `POST /api/risk/resolve`（`risk_rules_hash` 腿） | 每次 run 提交前 **1 次** | core 侧 `risk_service.resolve_timeout`（core 缺省 10s，归 `tellurion:QT-77` / `SVC-CORE-RISK-RETIRE` ④；本仓不双写该值，也不设客户端超时） | **禁止自动重试**（含超时、5xx、连接错误） | run **fail loudly**（如 `risk_rules_unavailable`），**禁止**回落 `risk.BuiltinPolicy()` 或默认限额（`risk_manager.*` 已删；`resolve_enabled=false` 的部署是显式声明未接入，启动日志会 Warn） |
 | `POST /api/risk/events`（告警 relay 腿） | run 后异步批量（非热路径） | core 侧 `events_timeout`（缺省 10s）+ outbox relay 周期（15s） | **允许**：整批 5xx / 连接错误可整批重发（去重键幂等）；207 只重发 `failed` 项；4xx **不重试**（修数据后人工重发） | 不阻塞 run（异步），但不许静默丢：outbox 有最大尝试次数，耗尽必须可见（core 侧计数/告警） |
 
 - 服务端只有 `ReadHeaderTimeout: 5s`（进程入口），**没有**按调用方配置的 deadline；慢查询靠窗口上限（7 天 / 5000 事件）兜住。

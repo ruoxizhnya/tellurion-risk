@@ -6,7 +6,7 @@
 
 风控规则的**真相源**：规则定义、限额表、聚合监控与熔断。**同步裁决（`RiskPolicy`）留在 core 进程内**。
 
-**状态**：🔶 首批实装（QT-42 X3a 规则侧 + X3b 快照侧 + PG Store 事务边界 + X3c 事件回传与监控 + X3d 熔断指令）。
+**状态**：✅ 首批实装已收口（QT-42 X3a 规则侧 + X3b 快照侧 + PG Store 事务边界 + X3c 事件回传与监控 + X3d 熔断指令；G0–G4 与 `SVC-RISK-G1/G3/G4` 均于 2026-11-10 收口）。剩余 3 项 ⏸ 见 `docs/TASKS.md`（不属于本阶段目标）。
 规则定义 / 版本 / 审批 / 审计 + 快照内容寻址 / `resolve` / `snapshots/{hash}` / `bundle` 三端点 /
 进程内 `ParseBundle` 边界 + `POST /events`（批量、去重键、207）+ `POST /breakers`（幂等键、409）+
 `monitor/exposure` / `alerts` / `evaluate` 三端点（**只读 `risk_events` 聚合/报表**，检测器不搬出 core；
@@ -23,10 +23,12 @@
 （`event.Reader`，Memory/PG）；持久化有 `Memory` 与 PG（`internal/pgstore`，启动时执行
 `rule.Migrations()` 幂等 DDL）；Service 的读-改-写经 `Store.Tx`（PG 行锁）完成，不再用进程内互斥锁；
 鉴权走 kit `auth/httpadapter` + 本仓 policy 表（全端点 fail-closed）；
-core 侧消费接线**拆两半读**（2026-10-25 订正）：✅ `risk_rules_hash` 生产者已落（QT-66 —— run 提交时调
-`POST /api/risk/resolve`，hash 写进 `quant.run_provenance`，**不再恒空串**；空串只剩「本部署未接入」=
-`not_configured` 一种合法含义）；⬜ `bundle` → `rule.ParseBundle` → 构建 `RiskPolicy` **仍未接**
-（core 全仓 `ParseBundle` 零调用点，进程内限额今天来自它自己的 `risk_manager.*` 配置）。
+core 侧消费接线**两半都已接**（2026-11-09 `SVC-CORE-RISK-RETIRE`）：✅ `risk_rules_hash` 生产者（QT-66 —— run 提交时调
+`POST /api/risk/resolve`，hash 写进 `quant.run_provenance`，空串只剩「本部署未接入」=
+`not_configured` 一种合法含义）；✅ 限额装配 —— core `LoadRiskPolicy` 走 `POST /api/risk/resolve` 的内联 `snapshot`
+→ `risk.PolicyFromSnapshot`（`tellurion:contracts/risk` 的 `Verify()` 重新 derive hash）。**消费方刻意不走本仓
+`ParseBundle`**：CT-03 ④ 已把快照 Go 类型迁 `contracts/risk` v0.9.0，本仓 `ParseBundle` 保留为仓内边界与测试基准；
+core 的 `risk_manager.*` 配置块已删、`risk_service.resolve_enabled` 出厂 `true`。
 告警生产侧接线同日落地：core 的 6 个检测器 + `Fire` 进来的对账 / 双跑差异按 `POST /api/risk/events`
 回传（`verdict:"alert"`），所以 `monitor/alerts` / `evaluate` 不再是结构性空集 —— 但生产侧开关
 `risk_service.events_enabled` **默认关**，关着的部署里空集是设定。
@@ -38,7 +40,7 @@ core 侧消费接线**拆两半读**（2026-10-25 订正）：✅ `risk_rules_ha
 （PG 可连 + `rule.Migrations()` 已执行；未注入检查 = 内存档，响应标 `store:"memory"`）两条**公开**端点，
 不鉴权、不限流；业务端点按调用方身份（`username` → `subject` → `open-access` 共用一桶）令牌桶限流
 （默认 50 rps / 突发 200），**鉴权先于限流**（401/403 不会被 429 顶替），超限 `429 rate_limited` + `Retry-After`。
-真实 PG 断开/恢复与 `compose up --wait` 两条腿**未执行**（本机 Docker 引擎未起），单子记 🔶。
+真实 PG 断开/恢复与 `compose up --wait` 两条腿已于 **2026-11-10** 真跑（Docker 引擎 29.8.0 起来后 `docker compose up --wait` EXIT=0、pg/risk 双 healthy，`/readyz` 停 PG → 503、恢复 → 200），`SVC-RISK-G1` 收口。
 
 **空集判别（G4，2026-11-07）**：`monitor/*` 三个响应都带 `configured`（必有键）：`false` = 未接入
 （部署声明 `RISK_EVENTS_EXPECTED`，缺省 false，与 core 出厂 `events_enabled=false` 对齐）；`true` + 空 =
@@ -84,7 +86,7 @@ go test ./...
 
 | 依赖 | 版本 | 说明 |
 |---|---|---|
-| `github.com/ruoxizhnya/tellurion-contracts` | 未引入（远端最新 `v0.6.0`，2026-10-24 发版；2026-10-25 实测远端 tag 确为 `v0.6.0`） | `RiskPolicy` 相关 DTO 只认契约；当前规则侧零跨仓依赖（实测本仓对 contracts 的 import = **0**），接入时 pin tag 不 pin 伪版本 |
+| `github.com/ruoxizhnya/tellurion-contracts` | 未引入（远端最新 `v0.9.0`，2026-11-09 CT-05 收编 `broker` / `risk` DTO） | `RiskPolicy` 相关 DTO 只认契约；本仓对 contracts 的 import = **0**（快照 Go 类型已由 CT-03 落 `contracts/risk`，core 是它的消费方；本仓改用契约类型是独立迁移单，不在顺手改里做）。接入时 pin tag 不 pin 伪版本 |
 | `github.com/ruoxizhnya/tellurion-kit` | `v0.2.0`（2026-10-25 从 `v0.1.1` 升到 `v0.1.4`，KT-11；2026-11-10 随 `KT-13` 升） | 鉴权机制：`auth`（token 签发 / 解析）+ `auth/httpadapter`（net/http 适配、启动闸、Policy）。本仓只写策略表，不另造 token 校验。**`v0.1.4` 起 `role=service` 的非数字 subject 不再被 401**——这是本仓 resolve/events 两条 service 档位真正可用的起点 |
 | `github.com/jackc/pgx/v5` | `v5.7.5` ⚠️ **分叉已登记** | PostgreSQL 驱动。仅 `cmd/riskservice` 空白导入 `stdlib` 注册 `database/sql` 驱动；`internal/pgstore` 只用 `database/sql`，不直接依赖 pgx API（`pgconn` 仅用于唯一约束错误识别）。**别按别的仓那句「与 core 对齐」推断本仓**：2026-10-26 实测 core / kit / data / strategy / agent / orchestration / broker 七仓 = `v5.7.3`，**本仓 = `v5.7.5`**，analytics = `v5.11.0`。三档并存不是同一把刀，跨仓抄 `pgxpool` / `pgtype` 用法前先核目标仓的版本；统一到一档要单独立单，不在顺手 tidy 里做 |
 

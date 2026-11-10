@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-25
-verified-by: 裁-15 鉴权接线（kit net/http 适配 · 全端点策略表 · 审计读 · ADR-0005）；同日 QT-42 X3c 的 core 腿（告警生产侧接线）+ F3 账目订正
+last-verified: 2026-11-11
+verified-by: 2026-11-11 文档对齐审计 —— `SVC-CORE-RISK-RETIRE`（2026-11-09）与 `SVC-RISK-G1/G3/G4`（2026-11-10）收口后校准：core 消费走 `contracts/risk` + `risk.PolicyFromSnapshot`（不经本仓 `ParseBundle`）、`risk_manager.*` 已删、`resolve_enabled` 出厂 `true`、探针改 HTTP、DDL 条数 12；此前 裁-15 鉴权接线（ADR-0005）+ QT-42 X3c core 腿
 ---
 
 # 架构 — tellurion-risk
@@ -34,7 +34,7 @@ verified-by: 裁-15 鉴权接线（kit net/http 适配 · 全端点策略表 · 
 | 事件收集 | 异步批量落库 | 不在热路径 |
 | 监控 | 敞口 / 告警 / 报表评估（只读 `risk_events` 聚合） | 不运行检测器（检测器留 core）、不阻断下单（阻断靠熔断指令） |
 
-## 3.1 包布局（现状，2026-10-23）
+## 3.1 包布局（现状，2026-11-11）
 
 ```
 cmd/
@@ -44,7 +44,7 @@ internal/
   rule/              领域核心：RuleType/Scope/Status 冻结枚举、Revision 校验与参数规范化、
                      参数字典（params.go：14 个标量，写侧严格 / 读侧只拒未知键，见 db-schema §7）、
                      VersionHash、快照内容寻址（Snapshot / SnapshotHash / ParseBundle）、
-                      Store 端口（含 Tx 事务语义）+ Memory 实现、Migrations()（**11 条**幂等 DDL：1 schema + 7 表 + 3 索引，实测 `internal/rule/ddl.go`）、
+                      Store 端口（含 Tx 事务语义）+ Memory 实现、Migrations()（**12 条**幂等 DDL：1 schema + 7 表 + 3 索引 + 1 ALTER，实测 `internal/rule/ddl.go`）、
                       Service（Create / Update / Approve / List / Audit / Resolve / GetSnapshot）
   pgstore/           PG 实现：rule.Store / event.Store / event.Reader / breaker.Store（Tx = 数据库事务 + FOR UPDATE 行锁）+ Migrate
   event/             X3c 事件：wire Event / 逐条校验 / 去重键 + Memory 实现 / Service.Ingest；
@@ -62,13 +62,13 @@ doc.go               仓级包文档（无代码）
 
 **部署（G0，2026-10-26）**：仓内自带 `Dockerfile`（多阶段、非 root）+ `deploy/compose.yaml`；
 端口 **8089** 是唯一对外端口（容器内 `-addr 0.0.0.0:8089`，宿主发布 `127.0.0.1:8089`）。
-健康检查是 **TCP 探针**（`nc -z 127.0.0.1 8089`），因为本仓今天**没有公开 `/healthz`**
-（公开健康端点属 G1；不为了探针临时造一个匿名可读端点）。配置只经 env
-（`RISK_DATABASE_URL` / `JWT_SECRET` / `AUTH_INSECURE_EXPOSURE`），不入镜像、不落库。
-**未落**（2026-10-25 订正）：外部推送通道；core 侧 `bundle` → `rule.ParseBundle` → 构建 `RiskPolicy`
-（F3 的剩余半边 —— **F3 的 hash 半边已落**：QT-66 把 `risk_rules_hash` 写进 `quant.run_provenance`；
-**告警生产侧接线也已落**：core `alertLoop` → `POST /events`，开关默认关）；`POST /events` 的审计留痕。
-清单见 `docs/TASKS.md` QT-42 施工记录。
+健康检查是 **HTTP 探针**：`GET /healthz`（进程存活）/ `GET /readyz`（PG 可连 + 迁移已执行；内存档标 `store:"memory"`），
+两条**公开**、不鉴权、不限流（G1，2026-11-07；原 TCP 探针口径作废）。配置只经 env
+（`RISK_DATABASE_URL` / `JWT_SECRET` / `AUTH_INSECURE_EXPOSURE` / `RISK_EVENTS_EXPECTED`），不入镜像、不落库。
+**未落**（2026-11-11 订正）：外部推送通道；`POST /events` 的审计行（事件身份已落 `risk.risk_events.actor`，QT-80）；
+熔断**执行方**与 ACK（X3d，须升格 ADR）。core 侧消费接线已于 **2026-11-09** 落地（`SVC-CORE-RISK-RETIRE`：
+`resolve` 内联 `snapshot` → `risk.PolicyFromSnapshot`，**不走**本仓 `ParseBundle`）；`risk_rules_hash` 生产者见 QT-66。
+清单见 `docs/TASKS.md` 剩余 3 项（均 ⏸）。
 
 ## 4. 三份契约（功能的边界就在这三份文件里）
 
@@ -81,16 +81,18 @@ doc.go               仓级包文档（无代码）
 ## 5. 依赖方向
 
 ```
-contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未引入）
+contracts（`risk` 快照 DTO 已于 2026-11-09 落 v0.9.0）+ kit（鉴权已引入 v0.2.0）
         ↑
  tellurion-risk ──(HTTP 粗粒度)──► core 进程内 RiskPolicy
         └──(HTTP 异步)──► 事件回传
 ```
 
-- 规则侧**无跨仓依赖**：版本 hash 与枚举都在 `internal/rule` 自己定义（域标签风险见 `db-schema.md` §5）。
+- 规则侧**无跨仓 import**：版本 hash 与枚举都在 `internal/rule` 自己定义（域标签风险见 `db-schema.md` §5）；
+  但**快照 wire 形状**已由 CT-03 收编 `contracts/risk`（core 是消费方），本仓仍用内部同形类型，改用契约类型须另立单。
 - 唯一第三方依赖是 PostgreSQL 驱动 `github.com/jackc/pgx/v5`（仅在进程入口注册驱动，见 ADR-0003）；
   领域包只依赖 `database/sql` 的抽象（`internal/pgstore`），不感知驱动实现。
-- 契约（`RuleSnapshot` / `RuleEvent` / `BreakerCommand`）要等 X3b/X3c 出现第二个 Go 使用方后才按 ADR-0001 ① 迁 contracts。
+- 契约迁移状态：`RuleSnapshot`（快照）已迁 `contracts/risk`（第二个 Go 使用方 = core，2026-11-09）；
+  `RuleEvent` / `BreakerCommand` 仍只有本仓一个 Go 使用方，按 ADR-0001 ① 继续留本仓。
 
 ## 6. 关键决策
 
@@ -113,7 +115,7 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | X3a | 规则定义 + 版本 + 审批状态机 + 审计 | 🔶 已实装（`internal/rule` + `internal/httpapi` 4 端点；PG Store / 迁移执行 / 事务边界已落（2026-10-24，ADR-0003）；鉴权已落（2026-10-25 裁-15 + ADR-0005：全端点过闸，`actor` 从 claims） |
-| X3b | 快照 + `resolve` / `bundle` | 🔶 已实装（`risk.rule_snapshots` DDL + 快照内容寻址 + `resolve`/`snapshots/{hash}`/`bundle` 三端点 + `rule.ParseBundle` 进程内边界，Memory/PG 双实现）；F3 订正（2026-10-25）：✅ `risk_rules_hash` 生产者已落（QT-66 的 core 腿），⬜ `bundle` → `ParseBundle` → `RiskPolicy` 仍未接（core 零调用点） |
+| X3b | 快照 + `resolve` / `bundle` | 🔶 已实装（`risk.rule_snapshots` DDL + 快照内容寻址 + `resolve`/`snapshots/{hash}`/`bundle` 三端点 + `rule.ParseBundle` 进程内边界，Memory/PG 双实现）；F3 订正（2026-11-11）：✅ `risk_rules_hash` 生产者已落（QT-66），✅ 消费侧已接（`SVC-CORE-RISK-RETIRE`，2026-11-09）——core 走 `resolve` 内联 `snapshot` → `risk.PolicyFromSnapshot`（`contracts/risk.Verify()`），**不经**本仓 `ParseBundle`；`bundle` 端点今天零消费方（保留为仓内边界 / 其他消费方备用） |
 | X3c | 事件回传 + 监控聚合 | ✅ 已实装（2026-10-24：`internal/event` + `POST /events` 批量/去重键/207；监控 3 端点只读 `risk_events` 聚合/报表，ADR-0004；鉴权闸 fail-closed）。**生产侧已接（2026-10-25）**：core 的告警按 `verdict:"alert"` 回传 ⇒ `alerts` / `evaluate` 不再是结构性空集（开关 `risk_service.events_enabled` 默认关） |
 | X3d | 熔断指令（幂等） | 🔶 已实装（`internal/breaker` + `POST /breakers` + `risk.circuit_orders`：`breaker_id` 幂等键、200 applied/already_applied、409 载荷冲突）；执行方与 ACK ⛔ 升格 ADR |
 
@@ -121,6 +123,7 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 
 > **本节是什么**：`tellurion:docs/TASKS.md`「五、X 线」公共前置 ② 要求的**接口对表本体**（模板 = `tellurion:docs/design/qt-decoupling/data-service-contract-and-ownership.md` §4.1）。逐个 port / DTO / endpoint 列 **签名 + 错误语义 + 版本策略**；缺一列就是没对完表。
 > **实测基线**：core `dbe4c68`（2026-10-22；QT-63 已落）。行号一律取 `git show HEAD:<path>`。复核方式：`git -C ../tellurion show HEAD:<path> | sed -n '<line>p'`。
+> **⚠️ 本节是 2026-10-22 的历史快照**：F1–F5 描述的是 core 旧消费形态（bundle / `risk_manager.*` / 不升格容器）。**2026-10-26 本仓已升格容器**（G0），**2026-11-09 `SVC-CORE-RISK-RETIRE` **已把限额真相迁到快照（`risk_manager.*` 删除、`resolve_enabled` 出厂 `true`、消费走 `contracts/risk` + `risk.PolicyFromSnapshot`）。**行号与「今天」不再代表现状**——现状看 §3.1 / §8 与 `dataflow.md` §1。
 > **列口径**：「今天」= 源码实测；「契约位」= S1（QT-05）后 contracts 的落点，写 `core-only` 表示今天**不满足** contracts ADR-0001 ① 的「≥2 个仓使用」判据（不是永久留 core）；「版本策略」按 QT-19 的 MAJOR / MINOR / PATCH 判定。
 > **引用**：`tellurion:docs/design/qt-decoupling/kernel-interface-map.md` §5（风控注入点）与 §二（输出面）；`tellurion-contracts:docs/API.md:134`（`domain.RiskManager` 已登记）、`tellurion-contracts:docs/API.md:173`（`BacktestResult` 无 `status`）。
 
@@ -152,14 +155,14 @@ contracts（规则 DTO / 事件 DTO，S1 后落）+ kit（logging/http/db，未�
 |---|---|---|---|---|
 | `OrderIntent` | `pkg/risk/interfaces.go:29`：`OrderID`（调用方生成的幂等键）、`RunID`、`Symbol`、`Side`、`OrderType`、`Qty`、`Price`、`Ts`（回测 = 数据时间，实盘 = 墙钟）；`pkg/live/interfaces.go:34` 是别名 | **core-only**（F2）；X3b 只冻结 **wire JSON**（snake_case，字段名如上） | 字段缺失由 `CheckOrder` 判：`OrderID` / `Symbol` 空、`Qty <= 0` ⇒ 拒绝；不允许「缺省放行」 | 加字段 = MINOR，但**位置化字面量会红**（QT-19 ③）；改名 / 删字段 = breaking；JSON tag 改名 = wire breaking |
 | `Verdict` | `pkg/risk/interfaces.go:46`：`Allowed bool` / `Reason string`；零值必须拒绝（`pkg/risk/interfaces_compliance_test.go:115` `TestVerdictFailClosed`） | 同上 | 零值 = 拒绝（**冻结**）；`Allowed=true` 时 `Reason` 可空 | 结构 **frozen**；加字段 = MINOR，且不得把零值变成放行 |
-| `RuleSnapshot` | **本仓已实装 wire 形状**（X3b，`internal/rule/snapshot.go`）：`Snapshot{risk_rules_hash, rules[], created_at}`；`risk.rule_snapshots` DDL 已落 | 目标 `tellurion-contracts/risk`（届时应已有 core + 本仓两个使用方） | 解析失败 / hash 不匹配 ⇒ 拒绝开跑（不回落 latest）；`rule.ParseBundle` 双头 derive 校验 | 内容寻址：任一规则内容变 ⇒ 新 hash；**hash 算法变更 = 域标签 v2（全历史 hash 作废）**。样板 = `FactorDefinition.VersionHash()`（`pkg/domain/factor_def.go:151`：canonical JSON 的 SHA-256，加载时重新 derive 校验，见 `pkg/storage/factor_definition.go:94-97`） |
+| `RuleSnapshot` | **本仓已实装 wire 形状**（X3b，`internal/rule/snapshot.go`）：`Snapshot{risk_rules_hash, rules[], created_at}`；`risk.rule_snapshots` DDL 已落 | **已落 `tellurion-contracts/risk` v0.9.0**（CT-03，2026-11-09；core 用 `Verify()` 重新 derive hash；本仓仍用内部同形类型，改 import 须另立单） | 解析失败 / hash 不匹配 ⇒ 拒绝开跑（不回落 latest）；消费方 core 走 `PolicyFromSnapshot` 的严格校验；本仓 `rule.ParseBundle` 双头 derive 校验保留为仓内边界 | 内容寻址：任一规则内容变 ⇒ 新 hash；**hash 算法变更 = 域标签 v2（全历史 hash 作废）**。样板 = `FactorDefinition.VersionHash()`（`pkg/domain/factor_def.go:151`：canonical JSON 的 SHA-256，加载时重新 derive 校验，见 `pkg/storage/factor_definition.go:94-97`） |
 | `RuleEvent`（目标） | **本仓已实装 wire 形状**（X3c，`internal/event`）：`{run_id, order_id, event_seq, symbol?, verdict?, reason?, payload?, ts}`；`risk.risk_events` DDL 已落；未知字段保留在落库原文 `raw` | 目标 `tellurion-contracts/risk`（同 `RuleSnapshot`） | 去重键 `run_id + order_id + event_seq`；批量部分失败必须**逐条**报（207 `failed[{index, code, message}]`），不许全量 500 / 全量重发 | 加字段 = MINOR；未知字段**不得丢弃**（原文进 `raw` JSONB） |
 | `BreakerCommand`（目标） | **本仓已实装 wire 形状**（X3d，`internal/breaker`）：`{breaker_id, action, scope, reason?, ts}`；动作冻结枚举 `halt` / `cancel_all`；`risk.circuit_orders` DDL 已落 | 同上 | 幂等键 `breaker_id`；同键同载荷 ⇒ `already_applied`；同键不同载荷 ⇒ **409 `idempotency_conflict`**（不许静默成功）。载荷身份 = action + scope + reason，`ts` 不参与 | 幂等键语义 frozen；新增动作枚举 = MINOR（旧执行方 fail-closed 拒收未知动作） |
 | `risk_rules_hash`（目标值） | 定义在 `pkg/backtest/contracts/provenance.go:174`，无条件进 canonical（`:216`）；QT-63 已落表与写入路径；~~生产者今天写空串（F3）~~ **已落真值**（2026-10-25，QT-66 的 core 腿：run 提交时向本仓 `POST /api/risk/resolve` 取一次） | 已属 contracts（QT-03 冻结域） | 空串 = 未登记；**不得用空串冒充「无风控」**（今天空串只对应 `not_configured` = 该部署未接入 risk 服务） | SHA-256 hex（64 字符）；域标签变更 = breaking |
 
 ### 9.4 C 组 · 服务对外 HTTP 面（升格后）
 
-> **鉴权（2026-10-25 已落，ADR-0005）**：按 core `QT-50 ④` / 裁-15 统一，机制用 kit `v0.1.1` 的
+> **鉴权（2026-10-25 已落，ADR-0005）**：按 core `QT-50 ④` / 裁-15 统一，机制用 kit 的
 > `auth/httpadapter`（`Parse` + `kind==access` + 角色 any-of + 启动闸），本仓只留 policy 表
 > （`internal/httpapi/policy.go`）。**全部端点** fail-closed：闸未装配 → `503 auth_unavailable`，
 > 无 token / 过期 / refresh 当 access → `401 unauthenticated`，角色不足 → `403 forbidden`。

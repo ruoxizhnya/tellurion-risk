@@ -1,6 +1,6 @@
 # tellurion-risk
 
-> module: `tellurion-risk` ｜ 状态：**🔶 首批实装（QT-42）——规则 / 快照 / 审计读 / 事件 / 熔断 / 监控 3 端点已落地；鉴权已接（kit 适配 + 全端点策略表）；core 侧消费接线未接**
+> module: `tellurion-risk` ｜ 状态：**✅ 首批实装已收口（QT-42 + G0–G4）——规则 / 快照 / 审计读 / 事件 / 熔断 / 监控 3 端点已落地；鉴权已接（kit 适配 + 全端点策略表）；core 侧消费接线已接（`SVC-CORE-RISK-RETIRE`，2026-11-09，走 `contracts/risk` + `risk.PolicyFromSnapshot`，不经本仓 `ParseBundle`）；剩余 3 项 ⏸ 见 `docs/TASKS.md`**
 
 风控规则的**真相源**：规则定义、限额表、聚合监控与熔断。**同步裁决（`RiskPolicy`）留在 core 进程内**。
 
@@ -44,8 +44,9 @@ docker compose -f deploy/compose.yaml up --build
 | `RISK_DATABASE_URL` | PostgreSQL DSN；空 = 进程内 Memory（重启即丢，仅本地开发） | 空 |
 | `JWT_SECRET` / `AUTH_JWT_SECRET` | 鉴权 secret；空 + 回环 = 开放，空 + 非回环 = **拒绝启动** | 空 |
 | `AUTH_INSECURE_EXPOSURE` | 非回环绑定时的显式开放声明（只接受回环发布） | 空 |
+| `RISK_EVENTS_EXPECTED` | 部署是否声明已接入事件回传（`monitor/*` 的 `configured` 判别位） | `false` |
 
-健康检查是 **TCP 探针**（`nc -z 127.0.0.1 8089`）：本仓今天没有公开 `/healthz`，公开健康端点归 G1。
+健康检查用 **HTTP 探针**：`GET /healthz`（进程存活）/ `GET /readyz`（PG 可连 + 迁移已执行；内存档标 `store:"memory"`），两条公开、不鉴权、不限流（G1，2026-11-07）。
 
 `POST /api/risk/rules` → `PUT /api/risk/rules/{id}` → `POST /api/risk/rules/{id}/approve` → `GET /api/risk/rules?scope=&active=`。
 

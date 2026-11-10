@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-11-07
-verified-by: SVC-RISK-G2 `risk.*` 唯一 writer 自证（迁移重放腿 + 跨 schema 写护栏 + `risk.limits` 未启用定死 + §8 限额真相双 owner）
+last-verified: 2026-11-11
+verified-by: 2026-11-11 文档对齐审计 —— 限额双 owner 已收口（`SVC-CORE-RISK-RETIRE` 2026-11-09 + `SVC-RISK-G3` 2026-11-10）：core `risk_manager.*` / `alert.*` 阈值已删、`resolve_enabled` 出厂 `true`、消费走 `contracts/risk` + `risk.PolicyFromSnapshot`；此前 SVC-RISK-G2（迁移重放腿 + 跨 schema 写护栏 + `risk.limits` 未启用定死）
 ---
 
 # DB Schema — tellurion-risk
@@ -17,7 +17,7 @@ verified-by: SVC-RISK-G2 `risk.*` 唯一 writer 自证（迁移重放腿 + 跨 s
 | `risk.rule_defs` | 规则定义（类型 / 参数归属 / 适用范围），`head_revision` 指向当前 head，`active_revision` 指向生效版本 | ✅ DDL + Memory/PG Store（2026-10-24） |
 | `risk.rule_revisions` | 版本追加 + 审批状态（draft→approved→active→deprecated）+ `version_hash` | ✅ 同上 |
 | `risk.rule_snapshots` | run 前下发的规则快照（内容寻址；回测结果记 `risk_rules_hash`） | ✅ DDL + Memory/PG 读写（`internal/rule/snapshot.go` / `store.go` / `internal/pgstore`） |
-| `risk.limits` | 账户 / 策略 / 标的级限额 | 🔶 DDL 已落（2026-10-24）；**未启用、无写者**（2026-11-07 SVC-RISK-G2 定死，见 §7.4）：限额走 `rule_snapshots`；启用前置 = 本仓限额端点（另立单）+ 消费方（`tellurion:SVC-CORE-RISK-RETIRE` 的 `bundle` 接线），今日不建端点 |
+| `risk.limits` | 账户 / 策略 / 标的级限额 | 🔶 DDL 已落（2026-10-24）；**未启用、无写者**（2026-11-07 SVC-RISK-G2 定死，见 §7.4）：限额走 `rule_snapshots`；启用前置 = 本仓限额端点（另立单）；消费方已于 2026-11-09 就位（走 resolve 内联快照），但端点仍未建 ⇒ 不启用 |
 | `risk.risk_events` | 裁决事件留痕（run 后异步批量回传；去重键 `run_id + order_id + event_seq`，`raw` 保留原文）；监控的**唯一读源**（敞口 / 告警 / evaluate） | ✅ DDL + Memory/PG（2026-10-24，X3c；监控读取 2026-10-24） |
 | `risk.circuit_orders` | 熔断指令下发记录（幂等键 `breaker_id`；载荷身份 action + scope + reason） | ✅ DDL + Memory/PG（2026-10-24，X3d） |
 | `risk.audit_logs` | **规则与审批的操作审计**（谁改了哪条规则、谁批的） | 🔶 DDL 已落（**新表**，与现 `audit_logs` 无关、不复用——后者是 ADR-017 鉴权访问审计（`tellurion:pkg/auth` 写入），留 core） |
@@ -193,23 +193,25 @@ verified-by: SVC-RISK-G2 `risk.*` 唯一 writer 自证（迁移重放腿 + 跨 s
 **2026-11-07（SVC-RISK-G2）二选一定死 = 「显式声明本表暂不启用」**，启用前置两条缺一不可：
 
 1. 本仓新增限额**端点**与写路径（另立单；本单不建端点）；
-2. **消费方**就位：`tellurion:SVC-CORE-RISK-RETIRE` 的 `bundle → ParseBundle → RiskPolicy` 接线
-   真正消费本仓快照（今天未接）。
+2. **消费方**就位：`tellurion:SVC-CORE-RISK-RETIRE`（2026-11-09）已让 core 真正消费本仓快照
+   （`resolve` 内联 `snapshot` → `contracts/risk.Verify()` + `risk.PolicyFromSnapshot`；**不经** `ParseBundle`）。
 
-在此之前 §7 的规则快照是限额的唯一**目标**真相；运行时**当前**真相仍在 core 配置，
-这条双 owner 的登记见 §8。
+第 2 条已满足，第 1 条未满足 ⇒ `risk.limits` 继续不启用。至此 §7 的规则快照既是限额的**目标**真相，
+也是**当前运行时**真相；双 owner 登记已收口，见 §8。
 
-## 8. 「限额真相」双 owner 登记（2026-11-07，SVC-RISK-G2）
+## 8. 「限额真相」双 owner 登记（2026-11-07 登记 · **2026-11-11 已收口**）
 
 > ADR-036 §5.2 要求：限额这种**非表形态**的归属，必须写成一条可反查的临时双 owner 行，直到收口。
 > 本节是这条登记的**唯一真相源**；core 侧按 `risk:docs/db-schema.md` §8 反查。
-> 双 owner 是**已登记**状态，不是缺陷；未收口前不许出现第三份手写副本。
+> **状态：已收口**（`SVC-CORE-RISK-RETIRE` 2026-11-09 + `SVC-RISK-G3` 2026-11-10）。下表保留历史写者
+> 以便反查旧 run；**收口后的写者只有本仓快照**。
 
 | 项 | 内容 |
 |---|---|
-| **当前写者（临时）** | `tellurion:config/analysis-service.yaml`：`alert.*` 的 **5 个阈值**（`max_position_weight` 0.20 / `max_sector_weight` 0.40 / `max_drawdown` 0.15 / `daily_loss_limit` -50000 / `failure_rate_limit` 0.10）+ `risk_manager.*` 的 **14 个标量**（`target_volatility` / `max_position_weight` / `min_position_weight` / `stoploss.{atr_period,base_multiplier,bull_multiplier,bear_multiplier,sideways_multiplier}` / `take_profit.atr_multiplier` / `volatility.{lookback_days,annualization_factor}` / `regime.{fast_ma_period,slow_ma_period,vol_lookback}`）。由 `tellurion:pkg/bootstrap/engine.go` 的 `BuildRiskManager` 读进进程内 `risk.RiskManager`；告警阈值由 `alert.*` 读进 `AlertManager`。 |
-| **目标写者** | 本仓 `risk.rule_snapshots.rules[].params`（§7 十四标量）。`risk.limits` **只有启用后**才可能进入名单——今天不在（§1 / §7.4：未启用、无写者）。 |
-| **收口条件** | `tellurion:SVC-CORE-RISK-RETIRE`（core 侧 `risk_manager.*` / `alert.*` 配置真相退役）**且**本仓 `SVC-RISK-G3`（`bundle → ParseBundle → RiskPolicy` 逐字段映射 + 数值换算对拍）。 |
-| **今天的运行时事实** | `risk_service.resolve_enabled` 仍为 `false`（`tellurion:config/analysis-service.yaml:122`）⇒ core 不从本仓取快照，进程内限额**只来自 core 配置**；本仓快照内容不得被当成生效值。 |
-| **纪律** | 收口前改限额**只改当前写者**（core 配置）；两侧数值不一致时以当前写者为准，并记进 `SVC-RISK-G3` 的对拍项。 |
+| **当前写者** | 本仓 `risk.rule_snapshots.rules[].params`（§7 十四标量）。core `config/analysis-service.yaml` 的 `risk_manager:` 段已**整段删除**、`alert.*` 的 5 个限额阈值也已删除。 |
+| **历史写者（已退役，留档）** | 2026-11-09 前：core 配置 `risk_manager.*` 的 14 个标量（`tellurion:pkg/bootstrap/engine.go` 的 `BuildRiskManager`）+ `alert.*` 5 阈值（`max_position_weight` 0.20 / `max_sector_weight` 0.40 / `max_drawdown` 0.15 / `daily_loss_limit` -50000 / `failure_rate_limit` 0.10）。 |
+| **收口条件（均已满足）** | `tellurion:SVC-CORE-RISK-RETIRE`（2026-11-09：core 配置真退、消费改走 `contracts/risk` + `risk.PolicyFromSnapshot`）**且**本仓 `SVC-RISK-G3`（2026-11-10：逐字段映射 + 数值换算对拍通过）。⚠️ 映射**不走**本仓 `ParseBundle`（CT-03 ④ 已把快照 Go 类型迁 `contracts/risk v0.9.0`）；`ParseBundle` 仍是仓内边界与测试基准。 |
+| **今天的运行时事实** | `risk_service.resolve_enabled` 出厂 **`true`**：core 启动期调 `POST /api/risk/resolve` 取快照 → `Verify()` → `PolicyFromSnapshot`；取不到即**启动失败**，不回落。只有部署显式 `false` 才用 `risk.BuiltinPolicy()` 常量并打 Warn（= 明确声明未接入）。 |
+| **告警 5 阈值** | **不属于限额真相**：检测器参数固定为 core `pkg/alert` 代码常量（U7：检测器留 core；`SVC-CORE-RISK-RETIRE` 代裁，待主任追认），快照里没有对应规则类型。 |
+| **纪律** | 收口后改限额**只改本仓快照**；core 配置不得再出现同义键（core 侧已有护栏测试），出现即回归。 |
 
