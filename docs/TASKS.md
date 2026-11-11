@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-11-11
-verified-by: 2026-11-11 新增 `RISK-CONTRACTS-SNAPSHOT-MIGRATION`（跨仓 ADR-040：`contracts/risk` 为形状唯一真相，本仓改别名引用，`Bundle`/`ParseBundle` 留本仓）；`QT-42` ✅ 订正（2026-11-10：正文「收口记录」早已判 ✅，标题漏改；四条未落项均在 ⑥ 边界外且由 CT-03 / SVC-CORE-RISK-RETIRE / 数值口径裁决 / `risk.limits` 遗留空表裁决关闭，本仓零代码改动）；`SVC-RISK-G3` 收口（2026-11-10：core `risk_manager.*` 读点 14→0、core 新增新旧限额逐字段对拍测试、真 PG + 真 risk 进程的告警回传跑出 `risk.risk_events` 真实行与 `monitor/alerts count:1`、停服后 outbox `failed/attempts=3` 不静默丢；本仓零代码改动）；`SVC-RISK-G4` 收口（2026-11-10：core 侧停服前后各一次真退出码，补齐 ⑤③）；`QT-74` 收口（2026-11-10：迁 contracts 由 CT-03、core 消费由 SVC-CORE-RISK-RETIRE 关掉，数值口径 1:1 零换算，`risk.limits` 遗留空表）；`SVC-RISK-G1` 收口（2026-11-10：Docker 引擎 29.8.0 起来后 `docker compose up --wait` EXIT=0、pg/risk 双 healthy，`/healthz` 200、`/readyz` 200，PG 停→503、恢复→200，翻 ✅）；QT-42 补丁 —— PG Store 审批跃迁修复（`updateRule` 先覆盖后插入）+ 首条真 PG 回归腿 `internal/pgstore/approve_pg_test.go`（2026-11-07，破坏验证真做真还原）；QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两条用例 + 破坏验证 + 真 PG 两条集成腿，2026-11-07 补齐后 ✅）；SVC-RISK-G4 施工（2026-11-07）—— 失败语义五类 / 超时重试口径 / monitor `configured` 判别位 / runbook / 本仓侧停服演练；此前 SVC-RISK-G0 完成（Dockerfile + deploy/compose + 默认 8089 与 TCP 探针）；**2026-11-10**：本机 PostgreSQL 16.15 @ `127.0.0.1:5432` 上补齐真 PG 腿（`internal/pgstore` 全量用例全 PASS、`go test ./...` 6 包 ok、runbook 的 psql 审计/熔断/表存在三条腿）；Docker/compose 腿随后（同日）补跑通过，见 `SVC-RISK-G1`
+verified-by: 2026-11-11 全面审查 W7 台账立单（A5 授权）——新立 4 条六字段单（`RISK-GRACEFUL-SHUTDOWN` / `RISK-PGDOWN-503` / `RISK-TEST-DSN-UNIFY` / `RISK-GOMOD-DIRECT`），证据坐标引 ODR-069 / ODR-072（`tellurion-docs:docs/archive/odr/`）；本轮只立单不修复。此前 2026-11-11 新增 `RISK-CONTRACTS-SNAPSHOT-MIGRATION`（跨仓 ADR-040：`contracts/risk` 为形状唯一真相，本仓改别名引用，`Bundle`/`ParseBundle` 留本仓）；`QT-42` ✅ 订正（2026-11-10：正文「收口记录」早已判 ✅，标题漏改；四条未落项均在 ⑥ 边界外且由 CT-03 / SVC-CORE-RISK-RETIRE / 数值口径裁决 / `risk.limits` 遗留空表裁决关闭，本仓零代码改动）；`SVC-RISK-G3` 收口（2026-11-10：core `risk_manager.*` 读点 14→0、core 新增新旧限额逐字段对拍测试、真 PG + 真 risk 进程的告警回传跑出 `risk.risk_events` 真实行与 `monitor/alerts count:1`、停服后 outbox `failed/attempts=3` 不静默丢；本仓零代码改动）；`SVC-RISK-G4` 收口（2026-11-10：core 侧停服前后各一次真退出码，补齐 ⑤③）；`QT-74` 收口（2026-11-10：迁 contracts 由 CT-03、core 消费由 SVC-CORE-RISK-RETIRE 关掉，数值口径 1:1 零换算，`risk.limits` 遗留空表）；`SVC-RISK-G1` 收口（2026-11-10：Docker 引擎 29.8.0 起来后 `docker compose up --wait` EXIT=0、pg/risk 双 healthy，`/healthz` 200、`/readyz` 200，PG 停→503、恢复→200，翻 ✅）；QT-42 补丁 —— PG Store 审批跃迁修复（`updateRule` 先覆盖后插入）+ 首条真 PG 回归腿 `internal/pgstore/approve_pg_test.go`（2026-11-07，破坏验证真做真还原）；QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两条用例 + 破坏验证 + 真 PG 两条集成腿，2026-11-07 补齐后 ✅）；SVC-RISK-G4 施工（2026-11-07）—— 失败语义五类 / 超时重试口径 / monitor `configured` 判别位 / runbook / 本仓侧停服演练；此前 SVC-RISK-G0 完成（Dockerfile + deploy/compose + 默认 8089 与 TCP 探针）；**2026-11-10**：本机 PostgreSQL 16.15 @ `127.0.0.1:5432` 上补齐真 PG 腿（`internal/pgstore` 全量用例全 PASS、`go test ./...` 6 包 ok、runbook 的 psql 审计/熔断/表存在三条腿）；Docker/compose 腿随后（同日）补跑通过，见 `SVC-RISK-G1`
 completed-2026-11-11: `RISK-CONTRACTS-SNAPSHOT-MIGRATION` ✅（快照形状 / 冻结词表 / `DomainSnapshotHash` / 四个跨仓哨兵改 `contracts/risk` 别名 + `SnapshotHash` 委托；`go.mod` pin `v0.10.0`；对拍腿 `TestSnapshotHash_DelegatesToContracts`；原文与施工记录在 `docs/archive/tasks-archive-2026-11.md`）
 ---
 
@@ -44,6 +44,46 @@ completed-2026-11-11: `RISK-CONTRACTS-SNAPSHOT-MIGRATION` ✅（快照形状 / �
 - **⑤ 验收**：三条状态码（200 / 401 / 401）；破坏验证 = 换错 token ⇒ 401。
 - **⑥ 边界**：本仓校验侧；core 侧装配归 `tellurion`。
 - **重开条件**：任何一次真实部署验收。
+
+### RISK-GRACEFUL-SHUTDOWN · 裸 `ListenAndServe` 无信号处理 [P1] ⬜
+
+- **① 目标**：给 risk-service 优雅停机（SIGTERM 排空在途请求），对齐 core/agent/broker/orch 已有的信号处理。
+- **② 上下文**：审查发现 W5-F2（ODR-072）。`cmd/riskservice/main.go:91` 裸 `ListenAndServe` 无 `signal.Notify`；停服时在途的 resolve/events 请求被硬断。本仓 `Store.Tx` 行锁事务在硬断时可能留半完成态。
+- **③ 要求**：① `signal.Notify(SIGTERM/SIGINT)` + `server.Shutdown` 排空；② 停机时在途事务有明确收尾（不静默丢）；③ 与 `RISK-PGDOWN-503` 撞 main.go/api.go 按单号串行。
+- **④ 约束与非目标**：不改规则/快照语义；不引入 MQ；不改探针口径。
+- **⑤ 验收**：SIGTERM 真栈排空（A4 演练，E1）；破坏验证 = 删 Shutdown ⇒ 在途请求硬断用例红。
+- **⑥ 边界**：本仓停机；其余三仓同族缺口归各自 `*-GRACEFUL-SHUTDOWN`。
+- **owner**：待定
+
+### RISK-PGDOWN-503 · PG 不可达 default 分支回 500 而非 503（D5=a）[P2] ⬜
+
+- **① 目标**：让 PG 不可达时回 **503 `dependency_unavailable`**（可判定、可重试），而不是 default 分支的 500；并消除 api-schema 自相矛盾。
+- **② 上下文**：审查发现 W2-F9（ODR-069）+ 裁决 D5=a。`internal/httpapi/api.go:419-420` default 分支 → 500；`docs/api-schema.md:335` 与 `:372` 对 PG-down 状态码口径矛盾（一处 503、一处 500）。D5=a：统一 503 `dependency_unavailable`（对齐 data/analytics 的依赖不可达语义）。
+- **③ 要求**：① PG 不可达分支显式 503 `dependency_unavailable`；② api-schema.md:335/:372 口径统一；③ 真栈停 PG → 503、恢复 → 200（同进程自愈）；④ 不把非依赖类错误也吞成 503。
+- **④ 约束与非目标**：不改规则/快照形状；不放宽鉴权；503 只用于依赖不可达，业务错误仍按原码。
+- **⑤ 验收**：停 PG 真栈 503（E1）；破坏验证 = 改回 500 ⇒ 用例红；api-schema 两处一致。
+- **⑥ 边界**：本仓错误语义与 api-schema；core 侧消费超时口径归 `tellurion`。
+- **owner**：待定
+
+### RISK-TEST-DSN-UNIFY · 测试 DSN 两个 env 名并存且均未登记 [P2] ⬜
+
+- **① 目标**：把本仓测试 DSN 统一到**一个** env 名，并在 AGENTS §2 / runbook 登记，消除「设了一个名、另一半测试仍 skip」的假绿。
+- **② 上下文**：审查发现 W6-F1（ODR-073）。`RISK_TEST_DSN`（`actor_pg_test.go:23` / `migrate_test.go:27` / `monitor_test.go:21`）与 `TELLURION_RISK_TEST_DSN`（`approve_pg_test.go:32`）两个名并存；AGENTS §2 与 runbook 均未登记 ⇒ 设一个名只跑一半真库腿，另一半静默 skip。
+- **③ 要求**：① 统一到一个 env 名（写死，其余改别名或同读）；② AGENTS §2 + runbook 登记该名与 `_test` 库要求；③ 无 DSN 仍自动 skip（不假绿），但设了名须全跑。
+- **④ 约束与非目标**：不改测试断言；不在活库上跑（只 `_test` 库）；不引入第二套 DSN 解析。
+- **⑤ 验收**：设统一名后全部真库腿真跑（数 PASS 行，E1）；破坏验证 = 设旧名 ⇒ 对应用例 skip 可见。
+- **⑥ 边界**：本仓测试 DSN 与文档；其余仓 DSN 命名归各仓。
+- **owner**：待定
+
+### RISK-GOMOD-DIRECT · contracts 被直接 import 却标 `// indirect` [P3] ⬜
+
+- **① 目标**：把 `go.mod` 里被直接 import 的 `tellurion-contracts` 从 `// indirect` 订正为直接依赖，让依赖表与事实一致。
+- **② 上下文**：审查发现 W1-F4（ODR-068）。`go.mod:35` `tellurion-contracts v0.10.0 // indirect`，但 `internal/rule/model.go:9` 直接 import contracts/risk（2026-11-11 复核仍 indirect）。`RISK-CONTRACTS-SNAPSHOT-MIGRATION` 改别名引用后已是直接依赖，标记未跟上。
+- **③ 要求**：① `go mod tidy` 让 contracts 转直接依赖（去 indirect）；② AGENTS §4 依赖表已写 v0.10.0，核对一致；③ 不改 pin 版本。
+- **④ 约束与非目标**：不升/降 contracts 版本；不加 replace；不顺手 tidy 无关依赖。
+- **⑤ 验收**：`go.mod` contracts 无 indirect；`go build/vet/test ./... -count=1` 绿。
+- **⑥ 边界**：本仓 go.mod 标记；版本列文档归 `tellurion:X-AGENTS-DEPENDENCY-TABLE`。
+- **owner**：待定
 
 ## 二、跨仓指针（不在本仓，勿双写）
 
