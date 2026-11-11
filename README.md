@@ -1,5 +1,7 @@
 # tellurion-risk
 
+> 5 分钟了解本服务：[SERVICE.md](SERVICE.md)
+
 > module: `tellurion-risk` ｜ 状态：**✅ 首批实装已收口（QT-42 + G0–G4）——规则 / 快照 / 审计读 / 事件 / 熔断 / 监控 3 端点已落地；鉴权已接（kit 适配 + 全端点策略表）；core 侧消费接线已接（`SVC-CORE-RISK-RETIRE`，2026-11-09，走 `contracts/risk` + `risk.PolicyFromSnapshot`，不经本仓 `ParseBundle`）；剩余 3 项 ⏸ 见 `docs/TASKS.md`**
 
 风控规则的**真相源**：规则定义、限额表、聚合监控与熔断。**同步裁决（`RiskPolicy`）留在 core 进程内**。
