@@ -1,6 +1,6 @@
 # TASKS 归档 — tellurion-risk（2026-11）
 
-> **本文件是 `docs/TASKS.md` 的历史归档，进 git、不删除**。归档时间 2026-11-11；收录范围 = 截至 2026-11-10 已收口（✅）的任务原文与当时的施工记录，**逐字搬入、未改写**（原文件 frontmatter 留在新台账；任务标题与正文原样保留）。
+> **本文件是 `docs/TASKS.md` 的历史归档，进 git、不删除**。归档时间 2026-11-11；收录范围 = 截至 2026-11-10 已收口（✅）的任务原文与当时的施工记录，**逐字搬入、未改写**（原文件 frontmatter 留在新台账；任务标题与正文原样保留）。2026-11-12 追加收录 W7 四单（`RISK-GRACEFUL-SHUTDOWN` / `RISK-PGDOWN-503` / `RISK-TEST-DSN-UNIFY` / `RISK-GOMOD-DIRECT`），原文同样逐字搬入，见 §三。
 
 > **检索方式**：按任务 ID `grep -n "<ID>" docs/archive/tasks-archive-2026-11.md`；按 commit `grep -n "<sha>" docs/archive/tasks-archive-2026-11.md`；索引表在本节下方，含 ID / 标题 / 收口日期 / commit / 证据链接。
 
@@ -17,6 +17,10 @@
 | QT-80 | 风险事件行带调用方身份（`risk_events.actor` + 写审计） | 2026-11-07 | —（原文未记） | [原文](#QT-80) |
 | SVC-RISK-G4 | 服务就绪门 G4：开关默认值 · 回传失败语义 · runbook（ADR-036） | 2026-11-10 | —（原文未记） | [原文](#SVC-RISK-G4) |
 | RISK-CONTRACTS-SNAPSHOT-MIGRATION | 快照形状改引用 `contracts/risk`（去双定义） | 2026-11-11 | 见本条「施工记录」 | [原文](#RISK-CONTRACTS-SNAPSHOT-MIGRATION)；[`../ARCHITECTURE.md`](../ARCHITECTURE.md) |
+| RISK-GRACEFUL-SHUTDOWN | 裸 `ListenAndServe` 无信号处理 | 2026-11-12 | `b547110` | [原文](#RISK-GRACEFUL-SHUTDOWN) |
+| RISK-PGDOWN-503 | PG 不可达 default 分支回 500 而非 503（D5=a） | 2026-11-12 | `d94358e` | [原文](#RISK-PGDOWN-503) |
+| RISK-TEST-DSN-UNIFY | 测试 DSN 两个 env 名并存且均未登记 | 2026-11-12 | `27a3e48` | [原文](#RISK-TEST-DSN-UNIFY) |
+| RISK-GOMOD-DIRECT | contracts 被直接 import 却标 `// indirect` | 2026-11-12 | `4a14b9c` | [原文](#RISK-GOMOD-DIRECT) |
 
 ---
 
@@ -865,3 +869,80 @@
 > - **门禁（真实退出码）**：`gofmt -l` 空；`go build ./...` / `go vet ./...` / `go test ./... -count=1` 全绿（6 包 ok）。
 > - **破坏验证（真做真还原）**：临时把 `SnapshotHash` 改成返回固定串 `deadbeef` ⇒ `TestSnapshotHash_DelegatesToContracts` **FAIL**（`两侧 hex 不一致：risk deadbeef / contracts 6749f14e…`）；还原后同用例 PASS。
 > - **未执行（如实）**：⑤ 的「真栈固定快照 `risk_rules_hash` 与基线 `84a95d7d…` 逐字节一致」**未跑**——需要带 seed 规则的真栈（seed 本身是 `RISK-RULE-SEED` ⏸）。代码级字节兼容由对拍腿 + contracts 的 golden vector（`14ecab86…`，2026-11-07 取自本仓真实实现）共同守住。补齐条件：`RISK-RULE-SEED` 落地后按 `tellurion:CORE-COMPOSE-UNIFY` 的 full profile 复跑。
+
+---
+
+## 三、W7 收口（2026-11-12）
+
+> 以下四条由 `docs/TASKS.md` 的 W7 台账移入；任务原文逐字保留，施工记录附在每条之后。
+
+<a id="RISK-GRACEFUL-SHUTDOWN"></a>
+### RISK-GRACEFUL-SHUTDOWN · 裸 `ListenAndServe` 无信号处理 [P1] ✅（2026-11-12）
+
+- **① 目标**：给 risk-service 优雅停机（SIGTERM 排空在途请求），对齐 core/agent/broker/orch 已有的信号处理。
+- **② 上下文**：审查发现 W5-F2（ODR-072）。`cmd/riskservice/main.go:91` 裸 `ListenAndServe` 无 `signal.Notify`；停服时在途的 resolve/events 请求被硬断。本仓 `Store.Tx` 行锁事务在硬断时可能留半完成态。
+- **③ 要求**：① `signal.Notify(SIGTERM/SIGINT)` + `server.Shutdown` 排空；② 停机时在途事务有明确收尾（不静默丢）；③ 与 `RISK-PGDOWN-503` 撞 main.go/api.go 按单号串行。
+- **④ 约束与非目标**：不改规则/快照语义；不引入 MQ；不改探针口径。
+- **⑤ 验收**：SIGTERM 真栈排空（A4 演练，E1）；破坏验证 = 删 Shutdown ⇒ 在途请求硬断用例红。
+- **⑥ 边界**：本仓停机；其余三仓同族缺口归各自 `*-GRACEFUL-SHUTDOWN`。
+- **owner**：待定
+
+> **施工记录（2026-11-12，`b547110`）**：
+> - **代码**：`cmd/riskservice/main.go` 从裸 `ListenAndServe` 改为 `net.Listen` + `serve(srv, ln, stop)`；`signal.Notify(stop, syscall.SIGTERM, os.Interrupt)`；收到信号后 `srv.Shutdown`（先关监听、等在途 handler），超时上限 `RISK_SHUTDOWN_TIMEOUT`（缺省 10s，非法值告警回退）。排空超时返回错误 ⇒ 进程非 0 退出，不静默丢在途请求；正常排空返回 nil ⇒ 退出码 0。handler 的 request context 不因停机取消，在途事务按正常路径收尾。
+> - **判据**：`TestServeDrainsInFlightRequests`（serve 不得提前返回、监听必须先关、在途请求拿到 200、排空后返回 nil）与 `TestServeShutdownTimeoutIsLoud`（50ms 超时下必须返回错误）。
+> - **破坏验证（真做真还原）**：临时移除 `srv.Shutdown` 调用 ⇒ `TestServeDrainsInFlightRequests` **FAIL**（`停机中监听仍在接受新连接`）；逐字节还原后 PASS。
+> - **真 SIGTERM 演练（E1，Linux 容器）**：`GOOS=linux` 交叉编译后 `docker run`（alpine，`JWT_SECRET` 注入），`docker stop --time 10` 投递 SIGTERM；容器退出码 **0**，日志 `received terminated, draining in-flight requests (timeout 10s)` → `drained, exiting`。
+> - **如实说明**：宿主为 Windows，无法向子进程投递 POSIX SIGTERM，故「在途请求排空」由可注入信号通道的同进程用例守住；容器演练覆盖真实信号 → 退出码路径（该演练无慢端点，不含在途请求）。
+> - **门禁**：`go build/vet/test ./... -count=1` 全绿。
+
+<a id="RISK-PGDOWN-503"></a>
+### RISK-PGDOWN-503 · PG 不可达 default 分支回 500 而非 503（D5=a）[P2] ✅（2026-11-12）
+
+- **① 目标**：让 PG 不可达时回 **503 `dependency_unavailable`**（可判定、可重试），而不是 default 分支的 500；并消除 api-schema 自相矛盾。
+- **② 上下文**：审查发现 W2-F9（ODR-069）+ 裁决 D5=a。`internal/httpapi/api.go:419-420` default 分支 → 500；`docs/api-schema.md:335` 与 `:372` 对 PG-down 状态码口径矛盾（一处 503、一处 500）。D5=a：统一 503 `dependency_unavailable`（对齐 data/analytics 的依赖不可达语义）。
+- **③ 要求**：① PG 不可达分支显式 503 `dependency_unavailable`；② api-schema.md:335/:372 口径统一；③ 真栈停 PG → 503、恢复 → 200（同进程自愈）；④ 不把非依赖类错误也吞成 503。
+- **④ 约束与非目标**：不改规则/快照形状；不放宽鉴权；503 只用于依赖不可达，业务错误仍按原码。
+- **⑤ 验收**：停 PG 真栈 503（E1）；破坏验证 = 改回 500 ⇒ 用例红；api-schema 两处一致。
+- **⑥ 边界**：本仓错误语义与 api-schema；core 侧消费超时口径归 `tellurion`。
+- **owner**：待定
+
+> **施工记录（2026-11-12，`d94358e`）**：
+> - **代码**：新增 `internal/httpapi/dependency.go` 的 `isDependencyUnavailable`，只认连接级失败——`pgconn.ConnectError`、`database/sql` 的 `driver.ErrBadConn`、`*net.OpError`、SQLSTATE `08` 类与 `57P01/57P02/57P03`；不解析错误字符串。`classify` 在 default 之前加该分支 → 503 `dependency_unavailable`；5xx（含 503）都不吐原文，只进日志。
+> - **文档**：`docs/api-schema.md` 运行期不可达、`/events` 整批落库、monitor 探针三处统一为「503 依赖不可达 / 500 其它」；`docs/dataflow.md` 同步。
+> - **判据**：`TestIsDependencyUnavailable`（连接级 true；业务错误 / 唯一约束 / 语法错误 / `context.DeadlineExceeded` false）、`TestClassify_DependencyUnavailableIs503`（503 接线 + `ErrSnapshotMismatch` 仍 500）；`TestMonitor_PGUnreachableIsNotEmptySet` 期望由 500 改为 503。
+> - **破坏验证（真做真还原）**：映射临时改回 500 ⇒ `TestMonitor_PGUnreachableIsNotEmptySet` 与 `TestClassify_DependencyUnavailableIs503` 均 **FAIL**；还原后绿。
+> - **真栈演练（E1，独立 PG 容器，未触碰本机共享实例）**：`GET /api/risk/rules` 200 → `docker stop` PG → `503 {"error":"dependency unavailable","code":"dependency_unavailable"}`、`/readyz` 503 → `docker start` 后同一 risk 进程 `rules=200`、`readyz=200`（连接池自愈）。
+> - **门禁**：`go build/vet/test ./... -count=1` 全绿。
+
+<a id="RISK-TEST-DSN-UNIFY"></a>
+### RISK-TEST-DSN-UNIFY · 测试 DSN 两个 env 名并存且均未登记 [P2] ✅（2026-11-12）
+
+- **① 目标**：把本仓测试 DSN 统一到**一个** env 名，并在 AGENTS §2 / runbook 登记，消除「设了一个名、另一半测试仍 skip」的假绿。
+- **② 上下文**：审查发现 W6-F1（ODR-073）。`RISK_TEST_DSN`（`actor_pg_test.go:23` / `migrate_test.go:27` / `monitor_test.go:21`）与 `TELLURION_RISK_TEST_DSN`（`approve_pg_test.go:32`）两个名并存；AGENTS §2 与 runbook 均未登记 ⇒ 设一个名只跑一半真库腿，另一半静默 skip。
+- **③ 要求**：① 统一到一个 env 名（写死，其余改别名或同读）；② AGENTS §2 + runbook 登记该名与 `_test` 库要求；③ 无 DSN 仍自动 skip（不假绿），但设了名须全跑。
+- **④ 约束与非目标**：不改测试断言；不在活库上跑（只 `_test` 库）；不引入第二套 DSN 解析。
+- **⑤ 验收**：设统一名后全部真库腿真跑（数 PASS 行，E1）；破坏验证 = 设旧名 ⇒ 对应用例 skip 可见。
+- **⑥ 边界**：本仓测试 DSN 与文档；其余仓 DSN 命名归各仓。
+- **owner**：待定
+
+> **施工记录（2026-11-12，`27a3e48`）**：
+> - **代码**：新增 `internal/pgstore/testdsn_test.go`（`const testDSNEnv = "RISK_TEST_DSN"` + `requireTestDSN(t)`，未设时 `t.Skip("RISK_TEST_DSN not set")`）；四条真库腿（`TestMigrationReplay_Integration` / `TestQueryEvents_Integration` / `TestLegacyActorNullRow_Integration` / `TestApprovePromotesRevisionOnRealPG`）全部改走该 helper，不再各自读 env；旧名 `TELLURION_RISK_TEST_DSN` 废弃（不保留别名，避免双名假绿）。
+> - **文档**：`AGENTS.md` §2 新增真库腿入口说明；`docs/runbook.md`「真库腿」改为唯一入口 + 四条腿清单 + `*_test` 库要求 + 旧名废弃声明。
+> - **验收（E1，独立 PG 容器）**：设 `RISK_TEST_DSN` ⇒ 4 条腿全 **PASS**（`--- PASS` 8 行、`--- SKIP` 0 行，`ok tellurion-risk/internal/pgstore`）；只设旧名 ⇒ 4 条腿显式 `SKIP`（skip 消息 `RISK_TEST_DSN not set` 可见）；不设任何 DSN ⇒ 同样 4 条 `SKIP`。
+> - **门禁**：`go build/vet/test ./... -count=1` 全绿。
+
+<a id="RISK-GOMOD-DIRECT"></a>
+### RISK-GOMOD-DIRECT · contracts 被直接 import 却标 `// indirect` [P3] ✅（2026-11-12）
+
+- **① 目标**：把 `go.mod` 里被直接 import 的 `tellurion-contracts` 从 `// indirect` 订正为直接依赖，让依赖表与事实一致。
+- **② 上下文**：审查发现 W1-F4（ODR-068）。`go.mod:35` `tellurion-contracts v0.10.0 // indirect`，但 `internal/rule/model.go:9` 直接 import contracts/risk（2026-11-11 复核仍 indirect）。`RISK-CONTRACTS-SNAPSHOT-MIGRATION` 改别名引用后已是直接依赖，标记未跟上。
+- **③ 要求**：① `go mod tidy` 让 contracts 转直接依赖（去 indirect）；② AGENTS §4 依赖表已写 v0.10.0，核对一致；③ 不改 pin 版本。
+- **④ 约束与非目标**：不升/降 contracts 版本；不加 replace；不顺手 tidy 无关依赖。
+- **⑤ 验收**：`go.mod` contracts 无 indirect；`go build/vet/test ./... -count=1` 绿。
+- **⑥ 边界**：本仓 go.mod 标记；版本列文档归 `tellurion:X-AGENTS-DEPENDENCY-TABLE`。
+- **owner**：待定
+
+> **施工记录（2026-11-12，`4a14b9c`）**：
+> - **变更**：`go mod tidy` 后 `github.com/ruoxizhnya/tellurion-contracts v0.10.0` 从第二 require 块（`// indirect`）移入直接 require 块；无版本变化、无 `replace`。AGENTS §4 依赖表核对仍为 `v0.10.0`。
+> - **附带**：tidy 清掉 `go.sum` 中已不使用的 `tellurion-kit v0.1.4` 两行校验和（`v0.2.0` 条目保留），无其它依赖改动。
+> - **门禁**：`go build ./...` / `go vet ./...` / `go test ./... -count=1` 全绿（6 包 ok）。
