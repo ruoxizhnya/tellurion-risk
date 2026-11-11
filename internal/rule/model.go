@@ -5,17 +5,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	contractsrisk "github.com/ruoxizhnya/tellurion-contracts/risk"
 )
 
-// RuleType 是冻结的规则类型枚举。旧读者遇到未知类型必须 fail-closed 拒收
-// （docs/ARCHITECTURE.md §9.6）；新增类型 = MINOR，改既有语义 = breaking。
-type RuleType string
+// RuleType / Scope 与两组冻结词表由 `contracts/risk` 唯一持有（ADR-040）。
+//
+// 本仓只做类型别名：JSON 词表、`errors.Is` 判定与契约侧逐字相同；新增词表走
+// contracts 发版，不在本仓另抄一份。`Scope.Valid()` 也由契约提供（纯函数，
+// 熔断指令等跨包复用同一份枚举）。
+type RuleType = contractsrisk.RuleType
 
 const (
-	RuleTypePositionSizing RuleType = "position_sizing"
-	RuleTypeStopLoss       RuleType = "stop_loss"
-	RuleTypeRegime         RuleType = "regime"
-	RuleTypeTakeProfit     RuleType = "take_profit"
+	RuleTypePositionSizing = contractsrisk.RuleTypePositionSizing
+	RuleTypeStopLoss       = contractsrisk.RuleTypeStopLoss
+	RuleTypeRegime         = contractsrisk.RuleTypeRegime
+	RuleTypeTakeProfit     = contractsrisk.RuleTypeTakeProfit
 )
 
 var ruleTypes = map[RuleType]struct{}{
@@ -26,13 +31,13 @@ var ruleTypes = map[RuleType]struct{}{
 }
 
 // Scope 是规则适用范围。找不到对应 scope 的规则 = 没有规则，不允许"用默认限额"。
-type Scope string
+type Scope = contractsrisk.Scope
 
 const (
-	ScopeGlobal   Scope = "global"
-	ScopeAccount  Scope = "account"
-	ScopeStrategy Scope = "strategy"
-	ScopeSymbol   Scope = "symbol"
+	ScopeGlobal   = contractsrisk.ScopeGlobal
+	ScopeAccount  = contractsrisk.ScopeAccount
+	ScopeStrategy = contractsrisk.ScopeStrategy
+	ScopeSymbol   = contractsrisk.ScopeSymbol
 )
 
 var scopes = map[Scope]struct{}{
@@ -40,13 +45,6 @@ var scopes = map[Scope]struct{}{
 	ScopeAccount:  {},
 	ScopeStrategy: {},
 	ScopeSymbol:   {},
-}
-
-// Valid 报告 scope 是否在冻结枚举里。跨包（熔断指令等）复用同一份枚举，
-// 不在别处再抄一遍字符串。
-func (s Scope) Valid() bool {
-	_, ok := scopes[s]
-	return ok
 }
 
 // Status 是 revision 的审批状态。状态机之外没有第二条路：

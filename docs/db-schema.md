@@ -105,9 +105,11 @@ verified-by: 2026-11-11 文档对齐审计 —— 限额双 owner 已收口（`S
   （API 列表的 `status` 取 head revision 的状态）。裁决落 `docs/adr/0002-规则版本-hash-与审批状态机的裁决.md`。
 - **`version_hash` 域（2026-10-23）**：`tellurion.risk_rule_version_hash.v1`，本仓暂为唯一 owner
   （contracts 的 canonical 域表没有 risk 域）。
-- **`risk_rules_hash` 域（2026-10-23，X3b）**：`tellurion.risk_snapshot_hash.v1`，同样本仓暂为唯一 owner。
-  由**排序后的 active revision 内容**（rule_id / revision / scope / type / 规范化 params / version_hash）派生，
-  **不含 `created_at`**——同一内容永远同一 hash，缓存按 hash 永不失效；hash 算法变更 = 域标签 v2，全历史作废。
+- **`risk_rules_hash` 域（2026-10-23，X3b）**：`tellurion.risk_snapshot_hash.v1`。**2026-11-11 起该常量、
+  快照形状与编码器唯一真相在 `contracts/risk`**（ADR-040；本仓 `SnapshotHash` 委托 `Snapshot.Hash()`，
+  `DomainSnapshotHash` 是契约常量别名）。由**排序后的 active revision 内容**（rule_id / revision / scope / type /
+  规范化 params / version_hash）派生，**不含 `created_at`**——同一内容永远同一 hash，缓存按 hash 永不失效；
+  hash 算法变更 = 域标签 v2，全历史作废（改契约侧常量同样触发作废，须走 ADR 级裁决）。
 - **审计表不复用 core 的 `audit_logs`（2026-10-23）**：`risk.audit_logs` 是新表，只记人与规则/审批的操作；
   core 的 `audit_logs` 是 ADR-017 鉴权访问审计，两者语义不同，不做迁移合并。
 - **PG 事务边界（2026-10-24）**：Service 的读-改-写全部经 `Store.Tx`；PG 事务内 `GetDefinition` 用

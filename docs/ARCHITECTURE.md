@@ -87,11 +87,13 @@ contracts（`risk` 快照 DTO 已于 2026-11-09 落 v0.9.0）+ kit（鉴权已�
         └──(HTTP 异步)──► 事件回传
 ```
 
-- 规则侧**无跨仓 import**：版本 hash 与枚举都在 `internal/rule` 自己定义（域标签风险见 `db-schema.md` §5）；
-  但**快照 wire 形状**已由 CT-03 收编 `contracts/risk`（core 是消费方），本仓仍用内部同形类型，改用契约类型须另立单。
+- 规则侧**唯一跨仓 import = `contracts/risk`**（2026-11-11 `RISK-CONTRACTS-SNAPSHOT-MIGRATION`，ADR-040）：
+  `Snapshot` / `SnapshotRule` / `Scope` / `RuleType` / `DomainSnapshotHash` 与四个跨仓哨兵是契约侧的**类型 / 常量 / 错误别名**，
+  `SnapshotHash` 退化为 `contractsrisk.Snapshot{Rules: rules}.Hash()` 的薄封装。版本 hash（`VersionHash`）与参数字典
+  仍在本仓（服务策略，域标签风险见 `db-schema.md` §5）。
 - 唯一第三方依赖是 PostgreSQL 驱动 `github.com/jackc/pgx/v5`（仅在进程入口注册驱动，见 ADR-0003）；
   领域包只依赖 `database/sql` 的抽象（`internal/pgstore`），不感知驱动实现。
-- 契约迁移状态：`RuleSnapshot`（快照）已迁 `contracts/risk`（第二个 Go 使用方 = core，2026-11-09）；
+- 契约迁移状态：`RuleSnapshot`（快照）形状与编码在 `contracts/risk`（第二个 Go 使用方 = core，2026-11-09；本仓 2026-11-11 改别名引用）；
   `RuleEvent` / `BreakerCommand` 仍只有本仓一个 Go 使用方，按 ADR-0001 ① 继续留本仓。
 
 ## 6. 关键决策

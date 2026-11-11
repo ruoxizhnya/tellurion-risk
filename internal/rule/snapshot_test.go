@@ -1,12 +1,93 @@
 package rule
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
+
+	contractsrisk "github.com/ruoxizhnya/tellurion-contracts/risk"
 )
+
+// TestSnapshotHash_DelegatesToContracts 是 ADR-040 的跨仓对拍腿。
+//
+// 同一 fixture 必须三处同 hex：
+//  1. 本仓 `SnapshotHash`（已委托 contracts）；
+//  2. `contracts/risk.Snapshot.Hash()`；
+//  3. `legacySnapshotEncoding` —— 迁移前本仓实现的独立重建（域标签用字面量，
+//     不引用任何一方的常量）。
+//
+// 迁移只许换实现位置，不许改字节；这条红了说明历史 `risk_rules_hash` 已作废。
+func TestSnapshotHash_DelegatesToContracts(t *testing.T) {
+	rules := snapshotRules()
+	got, err := SnapshotHash(rules)
+	if err != nil {
+		t.Fatalf("SnapshotHash: %v", err)
+	}
+	fromContracts, err := contractsrisk.Snapshot{Rules: rules}.Hash()
+	if err != nil {
+		t.Fatalf("contracts Hash: %v", err)
+	}
+	legacy, err := legacySnapshotEncoding(rules)
+	if err != nil {
+		t.Fatalf("legacy encoding: %v", err)
+	}
+	if got != fromContracts {
+		t.Fatalf("两侧 hex 不一致：risk %s / contracts %s", got, fromContracts)
+	}
+	if got != legacy {
+		t.Fatalf("与迁移前编码不一致：now %s / legacy %s", got, legacy)
+	}
+	if DomainSnapshotHash != contractsrisk.DomainSnapshotHash {
+		t.Fatalf("域标签漂移：risk %q / contracts %q", DomainSnapshotHash, contractsrisk.DomainSnapshotHash)
+	}
+	// 哨兵必须是同一条错误值，errors.Is 才能跨仓成立。
+	if ErrInvalidParams != contractsrisk.ErrInvalidParams ||
+		ErrInvalidRuleType != contractsrisk.ErrInvalidRuleType ||
+		ErrInvalidScope != contractsrisk.ErrInvalidScope ||
+		ErrSnapshotMismatch != contractsrisk.ErrSnapshotMismatch {
+		t.Fatal("跨仓哨兵未别名到 contracts/risk：errors.Is 会失效")
+	}
+}
+
+// legacySnapshotEncoding 逐行重建迁移前 `internal/rule/snapshot.go` 的字节流。
+// 域标签刻意写字面量：它属于历史身份，不跟随任何一方的常量。
+func legacySnapshotEncoding(rules []SnapshotRule) (string, error) {
+	sorted := make([]SnapshotRule, len(rules))
+	copy(sorted, rules)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].RuleID < sorted[j].RuleID })
+
+	var b strings.Builder
+	b.WriteString("tellurion.risk_snapshot_hash.v1")
+	b.WriteByte('\n')
+	writeField(&b, "rule_count", strconv.Itoa(len(sorted)))
+	for _, r := range sorted {
+		dec := json.NewDecoder(bytes.NewReader(r.Params))
+		dec.UseNumber()
+		var v any
+		if err := dec.Decode(&v); err != nil {
+			return "", err
+		}
+		params, err := json.Marshal(v)
+		if err != nil {
+			return "", err
+		}
+		writeField(&b, "rule_id", r.RuleID)
+		writeField(&b, "revision", strconv.Itoa(r.Revision))
+		writeField(&b, "scope", string(r.Scope))
+		writeField(&b, "type", string(r.Type))
+		writeField(&b, "params", string(params))
+		writeField(&b, "version_hash", r.VersionHash)
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:]), nil
+}
 
 // ─── SnapshotHash ────────────────────────────────────────────────
 

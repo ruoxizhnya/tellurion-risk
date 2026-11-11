@@ -87,7 +87,7 @@ verified-by: 2026-11-11 实读 README / AGENTS / ARCHITECTURE / api-schema / db-
 | 跨仓 DTO / 契约 | 快照 Go 形状登记在 `tellurion-contracts/risk`，core 消费它 | `tellurion-contracts:docs/API.md` |
 | 对外 HTTP | 规则 / 快照 / 审计 / 事件 / 熔断 / 监控 | `docs/api-schema.md` |
 
-> **未裁事项**：本仓 `ParseBundle` 仍保留一份与 `contracts/risk` 同形的 `Snapshot` 定义（作为仓内边界与测试基准）；两者合并或择一为唯一真相**待裁决**，见 `tellurion-docs:docs/design/ddd-boundary-review-2026-11-11.md` C5/D3。本卡不替它拍板。
+> **已裁（2026-11-11，ADR-040）**：快照形状 / 冻结词表 / `DomainSnapshotHash` / 四个跨仓哨兵的唯一真相 = `contracts/risk`，本仓改**类型别名 + 委托**（`SnapshotHash` → `Snapshot.Hash()`）；`Bundle` / `ParseBundle` / `ForScope` 与参数字典仍留本仓（服务策略）。`go.mod` 已 pin `contracts v0.10.0`。见 `tellurion-docs:docs/adr/adr-040-risk-snapshot-single-source.md`。
 
 ## 6. 坏了怎么办
 

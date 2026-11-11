@@ -16,6 +16,7 @@
 | SVC-RISK-G2 | 服务就绪门 G2：`risk.*` 唯一 writer 与可重放迁移（ADR-036） | 2026-11-07 | —（原文未记） | [原文](#SVC-RISK-G2) |
 | QT-80 | 风险事件行带调用方身份（`risk_events.actor` + 写审计） | 2026-11-07 | —（原文未记） | [原文](#QT-80) |
 | SVC-RISK-G4 | 服务就绪门 G4：开关默认值 · 回传失败语义 · runbook（ADR-036） | 2026-11-10 | —（原文未记） | [原文](#SVC-RISK-G4) |
+| RISK-CONTRACTS-SNAPSHOT-MIGRATION | 快照形状改引用 `contracts/risk`（去双定义） | 2026-11-11 | 见本条「施工记录」 | [原文](#RISK-CONTRACTS-SNAPSHOT-MIGRATION)；[`../ARCHITECTURE.md`](../ARCHITECTURE.md) |
 
 ---
 
@@ -845,3 +846,22 @@
 | QT-08 | 本仓 CI / AGENTS / 台账由该单一并补齐 | `tellurion:docs/TASKS.md` |
 
 ---
+
+<a id="RISK-CONTRACTS-SNAPSHOT-MIGRATION"></a>
+### RISK-CONTRACTS-SNAPSHOT-MIGRATION · 快照形状改引用 `contracts/risk`（去双定义）[P1] ✅（2026-11-11）
+
+- **① 目标**：把本仓 `internal/rule` 里的 `Snapshot` / `SnapshotRule` / `Scope` / `RuleType` 与四个跨仓哨兵改为 **`contracts/risk` 的类型别名 + 委托**，消除同一形状两份定义；裁决见跨仓 ADR-040。
+- **② 上下文**：`contracts/risk/snapshot.go` 已按 CT-03 承载形状与 `Snapshot.Hash()`，注释明写编码「逐字节搬运」本仓 `SnapshotHash`；四个哨兵在 `contracts/risk/errors.go` 与本仓 `internal/rule/errors.go` 文案逐字相同。迁移前本仓 `go.mod` 零 import contracts，`internal/rule/snapshot.go` 仍自持一套定义；两侧会各自演进，且没有机器判据能发现漂移。
+- **③ 要求**：① `internal/rule` 改为别名引用（`type Snapshot = contractsrisk.Snapshot` 等），四个哨兵改为别名（保证 `errors.Is` 跨仓成立）；② `SnapshotHash(rules)` 退化为薄封装（调用 `contractsrisk.Snapshot{Rules: rules}.Hash()`），不再自带编码；③ `Bundle` / `ParseBundle` / `ForScope` / 参数字典保留在本仓（服务策略，CT-03 ④ 已裁不进契约）；④ 新增一条「同一 fixture 两侧同 hex」的对拍腿。
+- **④ 约束与非目标**：**不得**把 `Bundle`/`ParseBundle` 搬进 contracts；不改 `DomainSnapshotHash` 域标签与参数规范化算法（改 = 全历史 `risk_rules_hash` 作废）；不迁 pgstore、审批状态机等业务语义。
+- **⑤ 验收**：`gofmt -l` 空、`go build ./...`、`go vet ./...`、`go test ./... -count=1` 全绿；`go.mod` 出现 contracts require 且无 `replace`；真栈固定快照的 `risk_rules_hash` 与迁移前逐字节一致（基线 `84a95d7d…`）。破坏验证：把 `contracts/risk` 的 `DomainSnapshotHash` 改一个字符 ⇒ 两侧对拍同时红；还原复绿。
+- **⑥ 边界**：本仓 `internal/rule` 与 `go.mod`；`contracts/risk` 的形状若有缺口，在 contracts 仓另立单补，不在本仓复制。
+- **重开条件**：本条无外部前置；若对拍红说明两侧编码已不一致，先停下报告，不得单边更新基线。
+
+> **施工记录（2026-11-11）**：
+> - **代码**：`internal/rule/model.go` 的 `RuleType` / `Scope` 改 `contractsrisk` 类型别名，两组枚举常量逐字别名（删除本仓 `Scope.Valid()`，改用契约同名纯函数）；`internal/rule/snapshot.go` 的 `Snapshot` / `SnapshotRule` / `DomainSnapshotHash` 改别名，`SnapshotHash` 委托 `Snapshot.Hash()`（删除本地编码实现）；`internal/rule/errors.go` 四个跨仓哨兵改别名，其余七个服务私有哨兵不变。
+> - **依赖**：`go.mod` 新增 `github.com/ruoxizhnya/tellurion-contracts v0.10.0`（tag pin，无 `replace`）。`Bundle` / `ParseBundle` / `ForScope` / 参数字典 / `VersionHash` 全留本仓。
+> - **对拍腿**：`TestSnapshotHash_DelegatesToContracts` 用同一 fixture 三处比对——本仓 `SnapshotHash`、`contractsrisk.Snapshot.Hash()`、`legacySnapshotEncoding`（迁移前实现的独立重建，域标签用字面量）。迁移只换实现位置、不改字节。
+> - **门禁（真实退出码）**：`gofmt -l` 空；`go build ./...` / `go vet ./...` / `go test ./... -count=1` 全绿（6 包 ok）。
+> - **破坏验证（真做真还原）**：临时把 `SnapshotHash` 改成返回固定串 `deadbeef` ⇒ `TestSnapshotHash_DelegatesToContracts` **FAIL**（`两侧 hex 不一致：risk deadbeef / contracts 6749f14e…`）；还原后同用例 PASS。
+> - **未执行（如实）**：⑤ 的「真栈固定快照 `risk_rules_hash` 与基线 `84a95d7d…` 逐字节一致」**未跑**——需要带 seed 规则的真栈（seed 本身是 `RISK-RULE-SEED` ⏸）。代码级字节兼容由对拍腿 + contracts 的 golden vector（`14ecab86…`，2026-11-07 取自本仓真实实现）共同守住。补齐条件：`RISK-RULE-SEED` 落地后按 `tellurion:CORE-COMPOSE-UNIFY` 的 full profile 复跑。

@@ -2,6 +2,7 @@
 status: active
 last-verified: 2026-11-11
 verified-by: 2026-11-11 新增 `RISK-CONTRACTS-SNAPSHOT-MIGRATION`（跨仓 ADR-040：`contracts/risk` 为形状唯一真相，本仓改别名引用，`Bundle`/`ParseBundle` 留本仓）；`QT-42` ✅ 订正（2026-11-10：正文「收口记录」早已判 ✅，标题漏改；四条未落项均在 ⑥ 边界外且由 CT-03 / SVC-CORE-RISK-RETIRE / 数值口径裁决 / `risk.limits` 遗留空表裁决关闭，本仓零代码改动）；`SVC-RISK-G3` 收口（2026-11-10：core `risk_manager.*` 读点 14→0、core 新增新旧限额逐字段对拍测试、真 PG + 真 risk 进程的告警回传跑出 `risk.risk_events` 真实行与 `monitor/alerts count:1`、停服后 outbox `failed/attempts=3` 不静默丢；本仓零代码改动）；`SVC-RISK-G4` 收口（2026-11-10：core 侧停服前后各一次真退出码，补齐 ⑤③）；`QT-74` 收口（2026-11-10：迁 contracts 由 CT-03、core 消费由 SVC-CORE-RISK-RETIRE 关掉，数值口径 1:1 零换算，`risk.limits` 遗留空表）；`SVC-RISK-G1` 收口（2026-11-10：Docker 引擎 29.8.0 起来后 `docker compose up --wait` EXIT=0、pg/risk 双 healthy，`/healthz` 200、`/readyz` 200，PG 停→503、恢复→200，翻 ✅）；QT-42 补丁 —— PG Store 审批跃迁修复（`updateRule` 先覆盖后插入）+ 首条真 PG 回归腿 `internal/pgstore/approve_pg_test.go`（2026-11-07，破坏验证真做真还原）；QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两条用例 + 破坏验证 + 真 PG 两条集成腿，2026-11-07 补齐后 ✅）；SVC-RISK-G4 施工（2026-11-07）—— 失败语义五类 / 超时重试口径 / monitor `configured` 判别位 / runbook / 本仓侧停服演练；此前 SVC-RISK-G0 完成（Dockerfile + deploy/compose + 默认 8089 与 TCP 探针）；**2026-11-10**：本机 PostgreSQL 16.15 @ `127.0.0.1:5432` 上补齐真 PG 腿（`internal/pgstore` 全量用例全 PASS、`go test ./...` 6 包 ok、runbook 的 psql 审计/熔断/表存在三条腿）；Docker/compose 腿随后（同日）补跑通过，见 `SVC-RISK-G1`
+completed-2026-11-11: `RISK-CONTRACTS-SNAPSHOT-MIGRATION` ✅（快照形状 / 冻结词表 / `DomainSnapshotHash` / 四个跨仓哨兵改 `contracts/risk` 别名 + `SnapshotHash` 委托；`go.mod` pin `v0.10.0`；对拍腿 `TestSnapshotHash_DelegatesToContracts`；原文与施工记录在 `docs/archive/tasks-archive-2026-11.md`）
 ---
 
 # TASKS — tellurion-risk 未完成项
@@ -13,16 +14,6 @@ verified-by: 2026-11-11 新增 `RISK-CONTRACTS-SNAPSHOT-MIGRATION`（跨仓 ADR-
 ## 一、未做 / 挂起 / 外部依赖
 
 > 本节 = 本轮（2026-11-11）台账重整时登记的遗留边界。此前已收口单的正文与施工记录全部在归档文件里。
-
-### RISK-CONTRACTS-SNAPSHOT-MIGRATION · 快照形状改引用 `contracts/risk`（去双定义）[P1] ⬜
-
-- **① 目标**：把本仓 `internal/rule` 里的 `Snapshot` / `SnapshotRule` / `Scope` / `RuleType` 与四个跨仓哨兵改为 **`contracts/risk` 的类型别名 + 委托**，消除同一形状两份定义；裁决见跨仓 ADR-040。
-- **② 上下文**：`contracts/risk/snapshot.go` 已按 CT-03 承载形状与 `Snapshot.Hash()`，注释明写编码「逐字节搬运」本仓 `SnapshotHash`；四个哨兵在 `contracts/risk/errors.go` 与本仓 `internal/rule/errors.go` 文案逐字相同。但本仓 `go.mod` 至今**零 import contracts**（2026-11-11 实测），`internal/rule/snapshot.go:24,37,144` 仍自持一套定义；两侧会各自演进，且没有机器判据能发现漂移。
-- **③ 要求**：① `internal/rule` 改为别名引用（`type Snapshot = contractsrisk.Snapshot` 等），四个哨兵改为别名（保证 `errors.Is` 跨仓成立）；② `SnapshotHash(rules)` 退化为薄封装（调用 `contractsrisk.Snapshot{Rules: rules}.Hash()`），不再自带编码；③ `Bundle` / `ParseBundle` / `ForScope` / 参数字典保留在本仓（服务策略，CT-03 ④ 已裁不进契约）；④ 新增一条「同一 fixture 两侧同 hex」的对拍腿。
-- **④ 约束与非目标**：**不得**把 `Bundle`/`ParseBundle` 搬进 contracts；不改 `DomainSnapshotHash` 域标签与参数规范化算法（改 = 全历史 `risk_rules_hash` 作废）；不迁 pgstore、审批状态机等业务语义。
-- **⑤ 验收**：`gofmt -l` 空、`go build ./...`、`go vet ./...`、`go test ./... -count=1` 全绿；`go.mod` 出现 contracts require 且无 `replace`；真栈固定快照的 `risk_rules_hash` 与迁移前逐字节一致（基线 `84a95d7d…`）。破坏验证：把 `contracts/risk` 的 `DomainSnapshotHash` 改一个字符 ⇒ 两侧对拍同时红；还原复绿。
-- **⑥ 边界**：本仓 `internal/rule` 与 `go.mod`；`contracts/risk` 的形状若有缺口，在 contracts 仓另立单补，不在本仓复制。
-- **重开条件**：本条无外部前置（不涉柜台/密钥/产品取舍），可在任一常规发布窗口执行；若对拍红说明两侧编码已不一致，先停下报告，不得单边更新基线。
 
 ### RISK-RULE-SEED · 出厂规则集 seed 缺失 [P1] ⏸
 
