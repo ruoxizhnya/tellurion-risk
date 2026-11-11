@@ -14,8 +14,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // 注册 "pgx" database/sql 驱动
@@ -34,6 +36,11 @@ import (
 // 8089 而不是 8086：8086 是 ai-service 的口径，同机联调会撞号。回环是默认值，
 // 非回环绑定必须显式给 -addr 并过启动闸（无 secret + 非回环 = 拒绝启动）。
 const defaultAddr = "127.0.0.1:8089"
+
+// defaultShutdownTimeout 是有界排空的默认上限（RISK_SHUTDOWN_TIMEOUT 可调）。
+// 停机语义：先关监听（不再接新连接），再等在途 handler 跑完；超时则明确报错、
+// 以非 0 退出，不静默把在途请求丢掉。
+const defaultShutdownTimeout = 10 * time.Second
 
 func main() {
 	addr := flag.String("addr", defaultAddr, "listen address")
@@ -87,10 +94,67 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	log.Printf("riskservice: event ingest declared=%t (RISK_EVENTS_EXPECTED)", eventsExpected)
-	log.Printf("riskservice: listening on %s (auth=%t)", *addr, tokens.Enabled())
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		log.Fatalf("riskservice: listen %s: %v", *addr, err)
+	}
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGTERM, os.Interrupt)
+	defer signal.Stop(stop)
+
+	log.Printf("riskservice: listening on %s (auth=%t)", ln.Addr(), tokens.Enabled())
+	if err := serve(srv, ln, stop); err != nil {
 		log.Fatalf("riskservice: %v", err)
 	}
+	log.Printf("riskservice: drained, exiting")
+}
+
+// serve 在 ln 上跑 HTTP，直到收到停机信号或服务出错。
+//
+// 收到信号后只做两件事：关闭监听（拒绝新连接）等在途 handler 自然结束；
+// 超过有界超时仍未排空 ⇒ 返回错误（进程非 0 退出），不假装优雅。
+// handler 的 request context 不因停机被取消，因此在途事务按正常路径 COMMIT/ROLLBACK，
+// 不会留下半完成态（ADR-0003 的事务边界）。
+func serve(srv *http.Server, ln net.Listener, stop <-chan os.Signal) error {
+	serveErr := make(chan error, 1)
+	go func() {
+		err := srv.Serve(ln)
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+		serveErr <- err
+	}()
+
+	select {
+	case err := <-serveErr:
+		return err
+	case sig := <-stop:
+		log.Printf("riskservice: received %v, draining in-flight requests (timeout %s)",
+			sig, shutdownTimeout())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout())
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("riskservice: drain did not finish within %s: %v", shutdownTimeout(), err)
+		return fmt.Errorf("graceful shutdown: %w", err)
+	}
+	return <-serveErr
+}
+
+// shutdownTimeout 读 RISK_SHUTDOWN_TIMEOUT（缺省 10s）；非法或非正值回退缺省并告警。
+func shutdownTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("RISK_SHUTDOWN_TIMEOUT"))
+	if raw == "" {
+		return defaultShutdownTimeout
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		log.Printf("riskservice: ignoring invalid RISK_SHUTDOWN_TIMEOUT=%q, using %v", raw, defaultShutdownTimeout)
+		return defaultShutdownTimeout
+	}
+	return d
 }
 
 // bindHost 从 -addr 取绑定主机；取不到端口时原样当主机比（空 = 全网卡）。
