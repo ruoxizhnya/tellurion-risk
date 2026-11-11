@@ -1,6 +1,6 @@
 # TASKS 归档 — tellurion-risk（2026-11）
 
-> **本文件是 `docs/TASKS.md` 的历史归档，进 git、不删除**。归档时间 2026-11-11；收录范围 = 截至 2026-11-10 已收口（✅）的任务原文与当时的施工记录，**逐字搬入、未改写**（原文件 frontmatter 留在新台账；任务标题与正文原样保留）。2026-11-12 追加收录 W7 四单（`RISK-GRACEFUL-SHUTDOWN` / `RISK-PGDOWN-503` / `RISK-TEST-DSN-UNIFY` / `RISK-GOMOD-DIRECT`），原文同样逐字搬入，见 §三。
+> **本文件是 `docs/TASKS.md` 的历史归档，进 git、不删除**。归档时间 2026-11-11；收录范围 = 截至 2026-11-10 已收口（✅）的任务原文与当时的施工记录，**逐字搬入、未改写**（原文件 frontmatter 留在新台账；任务标题与正文原样保留）。2026-11-12 追加收录 W7 四单（`RISK-GRACEFUL-SHUTDOWN` / `RISK-PGDOWN-503` / `RISK-TEST-DSN-UNIFY` / `RISK-GOMOD-DIRECT`），原文同样逐字搬入，见 §三；同日另追加 Wave 2 三项跨仓 X 伞的**本仓施工记录**（按台账口径不为 X 伞新开六字段任务单），见 §四。
 
 > **检索方式**：按任务 ID `grep -n "<ID>" docs/archive/tasks-archive-2026-11.md`；按 commit `grep -n "<sha>" docs/archive/tasks-archive-2026-11.md`；索引表在本节下方，含 ID / 标题 / 收口日期 / commit / 证据链接。
 
@@ -21,6 +21,9 @@
 | RISK-PGDOWN-503 | PG 不可达 default 分支回 500 而非 503（D5=a） | 2026-11-12 | `d94358e` | [原文](#RISK-PGDOWN-503) |
 | RISK-TEST-DSN-UNIFY | 测试 DSN 两个 env 名并存且均未登记 | 2026-11-12 | `27a3e48` | [原文](#RISK-TEST-DSN-UNIFY) |
 | RISK-GOMOD-DIRECT | contracts 被直接 import 却标 `// indirect` | 2026-11-12 | `4a14b9c` | [原文](#RISK-GOMOD-DIRECT) |
+| X-DEP-BUMP-CONSUMERS | 消费方依赖抬升（kit v0.5.0 / go 1.26.11） | 2026-11-12 | `c19634a` | [施工记录](#X-DEP-BUMP-CONSUMERS) |
+| X-AGENTS-DEPENDENCY-TABLE | 依赖表按 go.mod 实测对齐 | 2026-11-12 | `74cfbf5` | [施工记录](#X-AGENTS-DEPENDENCY-TABLE) |
+| X-CI-RACE-STATICCHECK | CI 增加 `-race` 与 `staticcheck` | 2026-11-12 | `147eb56` | [施工记录](#X-CI-RACE-STATICCHECK) |
 
 ---
 
@@ -946,3 +949,39 @@
 > - **变更**：`go mod tidy` 后 `github.com/ruoxizhnya/tellurion-contracts v0.10.0` 从第二 require 块（`// indirect`）移入直接 require 块；无版本变化、无 `replace`。AGENTS §4 依赖表核对仍为 `v0.10.0`。
 > - **附带**：tidy 清掉 `go.sum` 中已不使用的 `tellurion-kit v0.1.4` 两行校验和（`v0.2.0` 条目保留），无其它依赖改动。
 > - **门禁**：`go build ./...` / `go vet ./...` / `go test ./... -count=1` 全绿（6 包 ok）。
+
+---
+
+## 四、Wave 2 跨仓 X 伞（2026-11-12）
+
+> 按台账口径，跨仓 X 伞**不在各仓新开六字段任务单**；本节只记本仓实际施工与证据。`docs/TASKS.md` 保持不动，不留开放项。
+
+<a id="X-DEP-BUMP-CONSUMERS"></a>
+### X-DEP-BUMP-CONSUMERS · 消费方依赖抬升（本仓部分）✅
+
+> **施工记录（2026-11-12，`c19634a`）**：
+> - **前置事实**：`tellurion-kit v0.5.0`（tag `c794171`）已发版并推远端，工具链底线 `go 1.26.11`；kit 自身 pin `pgx v5.11.0`。
+> - **本仓 pin 结果**：kit `v0.2.0 → v0.5.0`；contracts 保持 `v0.10.0`；`go` directive `1.25.0 → 1.26.11`（Go 自动切换 `go1.26.11` 工具链）。MVS 实测抬升：pgx `v5.7.5 → v5.11.0`、x/crypto `v0.57.0`、x/net `v0.60.0`、x/sync `v0.23.0`、x/sys `v0.48.0`、x/text `v0.42.0`。无 `replace`、无伪版本。
+> - **govulncheck（升后）**：`govulncheck ./...` **EXIT=0**，`Your code is affected by 0 vulnerabilities.`；另有 3 个模块级漏洞不可达（调用链不触达）。此前本仓 pgx `v5.7.5` 命中 GO-2026-5004（修复版 `v5.9.2`）。
+> - **破坏验证（降回旧 pin 对照）**：恢复旧 `go.mod/go.sum`（kit `v0.2.0` / `go 1.25.0` / pgx `v5.7.5`）后 `govulncheck ./...` **EXIT=3**，`Your code is affected by 12 vulnerabilities from 2 modules and the Go standard library.`，ID：GO-2026-5004 / 5970 / 6603 / 6607 / 6608 / 6611 / 6612 / 6613 / 6617 / 6629 / 6809 / 6859（x/net、x/text、pgx 与 Go 标准库）。按字节还原新 pin 后复跑 EXIT=0（已核对 `go.mod` 哈希一致）。
+> - **门禁**：`go build/vet/test ./... -count=1` 全绿；另用独立 PG 容器跑真库腿 **8 PASS / 0 SKIP / 0 FAIL**（确认 pgx `v5.11.0` 下迁移与四条真库腿无回归）。
+> - **边界**：只动本仓 `go.mod/go.sum`；其余仓由各自 `X-DEP-BUMP-CONSUMERS` 承担。
+
+<a id="X-AGENTS-DEPENDENCY-TABLE"></a>
+### X-AGENTS-DEPENDENCY-TABLE · 依赖表按 go.mod 实测对齐（本仓部分）✅
+
+> **施工记录（2026-11-12，`74cfbf5`）**：
+> - **AGENTS §4 逐行对齐**：contracts `v0.10.0`、kit `v0.5.0`、pgx `v5.11.0`，新增「Go 工具链（`go` directive）= `go 1.26.11`」一行（与 CI `setup-go` 同版本，kit `v0.5.0` 底线）。复核命令：`go list -m github.com/ruoxizhnya/tellurion-kit github.com/ruoxizhnya/tellurion-contracts github.com/jackc/pgx/v5` + `go.mod` 的 `go` directive，输出与表格逐格一致。
+> - **说明列订正**：原「pgx 三档并存、本仓 `v5.7.5` 分叉」改为「本仓 `v5.11.0`，由 kit `v0.5.0` 的 MVS 带入」，并保留「其它仓未做各自 bump 前仍可能 pin 旧档，跨仓抄 `pgxpool`/`pgtype` 前先核目标仓版本」的告警。
+> - **连带订正**：`docs/ARCHITECTURE.md` §5 依赖方向里过期的 contracts `v0.9.0` / kit `v0.2.0` 更新为 `v0.10.0` / `v0.5.0`（同批事实性订正）。
+> - **边界**：只订正文档版本事实，不改依赖；版本矩阵的跨仓推进顺序仍以 `tellurion-docs` 为准。
+
+<a id="X-CI-RACE-STATICCHECK"></a>
+### X-CI-RACE-STATICCHECK · CI 增加 `-race` 与 `staticcheck`（本仓部分）✅
+
+> **施工记录（2026-11-12，`147eb56`）**：
+> - **CI 变更**（`.github/workflows/ci.yml`）：`actions/setup-go@v5` 的 `go-version` 由 `"1.25"` 对齐到 `"1.26.11"`；新增 `Test（-race）`（`go test -race ./... -count=1`）与 `staticcheck`（`go install honnef.co/go/tools/cmd/staticcheck@v0.8.2` 后执行 `staticcheck ./...`）两步。
+> - **staticcheck 首跑**：`staticcheck ./...` **EXIT=0，零 finding**，无需修复、无 `//nolint` 豁免、无删断言。
+> - **`-race` 本地取证**：本机无 gcc 且 `CGO_ENABLED=0`，实跑报 `go: -race requires cgo; enable cgo by setting CGO_ENABLED=1`（EXIT=2），**只能由 CI 首跑验证**；未用本地绿冒充。
+> - **YAML 校验**：PyYAML 解析通过，并断言 `jobs.go.steps` 含 `go-version = 1.26.11`、step 名 `Test（-race）` / `staticcheck`、命令含 `go test -race ./... -count=1` 与 `staticcheck@v0.8.2`。
+> - **门禁**：`gofmt -l .` 无输出；`go build/vet/test ./... -count=1` 全绿。
