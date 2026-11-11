@@ -90,10 +90,13 @@ go test ./...
 
 | 依赖 | 版本 | 说明 |
 |---|---|---|
-| `github.com/ruoxizhnya/tellurion-contracts` | `v0.10.0`（2026-11-11 `RISK-CONTRACTS-SNAPSHOT-MIGRATION`：`Snapshot` / `SnapshotRule` / `Scope` / `RuleType` / `DomainSnapshotHash` / 四个跨仓哨兵改为别名 + `SnapshotHash` 委托 `Snapshot.Hash()`；`Bundle` / `ParseBundle` / `ForScope` 与参数字典留本仓） | `RiskPolicy` 相关 DTO 只认契约；形状唯一真相 = `contracts/risk`（ADR-040）。pin tag 不 pin 伪版本 |
-| `github.com/ruoxizhnya/tellurion-kit` | `v0.2.0`（2026-10-25 从 `v0.1.1` 升到 `v0.1.4`，KT-11；2026-11-10 随 `KT-13` 升） | 鉴权机制：`auth`（token 签发 / 解析）+ `auth/httpadapter`（net/http 适配、启动闸、Policy）。本仓只写策略表，不另造 token 校验。**`v0.1.4` 起 `role=service` 的非数字 subject 不再被 401**——这是本仓 resolve/events 两条 service 档位真正可用的起点 |
-| `github.com/jackc/pgx/v5` | `v5.7.5` ⚠️ **分叉已登记** | PostgreSQL 驱动。仅 `cmd/riskservice` 空白导入 `stdlib` 注册 `database/sql` 驱动；`internal/pgstore` 只用 `database/sql`，不直接依赖 pgx API（`pgconn` 仅用于唯一约束错误识别）。**别按别的仓那句「与 core 对齐」推断本仓**：2026-10-26 实测 core / kit / data / strategy / agent / orchestration / broker 七仓 = `v5.7.3`，**本仓 = `v5.7.5`**，analytics = `v5.11.0`。三档并存不是同一把刀，跨仓抄 `pgxpool` / `pgtype` 用法前先核目标仓的版本；统一到一档要单独立单，不在顺手 tidy 里做 |
+| `github.com/ruoxizhnya/tellurion-contracts` | `v0.10.0` | `RiskPolicy` 相关 DTO 只认契约；形状唯一真相 = `contracts/risk`（ADR-040）。2026-11-11 `RISK-CONTRACTS-SNAPSHOT-MIGRATION`：`Snapshot` / `SnapshotRule` / `Scope` / `RuleType` / `DomainSnapshotHash` / 四个跨仓哨兵改为别名 + `SnapshotHash` 委托 `Snapshot.Hash()`；`Bundle` / `ParseBundle` / `ForScope` 与参数字典留本仓。pin tag、不 pin 伪版本 |
+| `github.com/ruoxizhnya/tellurion-kit` | `v0.5.0` | 鉴权机制：`auth`（token 签发 / 解析）+ `auth/httpadapter`（net/http 适配、启动闸、Policy）。本仓只写策略表，不另造 token 校验。`v0.1.4` 起 `role=service` 的非数字 subject 不再被 401（resolve/events 两条 service 档位可用）。`v0.5.0`（2026-11-12 `X-DEP-BUMP-CONSUMERS`，tag `c794171`）要求 Go `>= 1.26.11`，并 pin `pgx v5.11.0`（MVS 抬升本仓 pgx） |
+| `github.com/jackc/pgx/v5` | `v5.11.0` | PostgreSQL 驱动。仅 `cmd/riskservice` 空白导入 `stdlib` 注册 `database/sql` 驱动；`internal/pgstore` 只用 `database/sql`，不直接依赖 pgx API（`pgconn` 仅用于唯一约束/连接级错误识别）。版本由 kit `v0.5.0` 的 MVS 带入（`v5.7.5 → v5.11.0`）并经 `govulncheck` 复核（旧版存在 GO-2026-5004，修复版 `v5.9.2`）。其它仓若仍 pin 旧档，跨仓抄 `pgxpool` / `pgtype` 用法前先核目标仓版本 |
+| Go 工具链（`go` directive） | `go 1.26.11` | `go.mod` 与 CI `actions/setup-go` 同一版本；kit `v0.5.0` 的工具链底线。旧版 Go 标准库存在可达漏洞（govulncheck 实测），不要把 directive 降回 `1.25.x` |
 
+> 本表以 `go.mod` 实测为准（`go list -m github.com/ruoxizhnya/tellurion-kit github.com/ruoxizhnya/tellurion-contracts github.com/jackc/pgx/v5` 复核）；2026-11-12 `X-AGENTS-DEPENDENCY-TABLE` 逐行对拍。
+>
 > 跨仓依赖**只认版本号**（伪版本或 tag），不认源码路径。契约变更走 `tellurion-contracts` 的发布，不走"顺手改一下"。
 
 ## 5. 活在哪、文档在哪

@@ -81,7 +81,7 @@ doc.go               仓级包文档（无代码）
 ## 5. 依赖方向
 
 ```
-contracts（`risk` 快照 DTO 已于 2026-11-09 落 v0.9.0）+ kit（鉴权已引入 v0.2.0）
+contracts（`risk` 快照 DTO 于 2026-11-11 落 v0.10.0）+ kit（鉴权，2026-11-12 升 v0.5.0 / Go 1.26.11）
         ↑
  tellurion-risk ──(HTTP 粗粒度)──► core 进程内 RiskPolicy
         └──(HTTP 异步)──► 事件回传
