@@ -61,6 +61,10 @@ go test ./...
 - 这三条是 R1/R2 的判据：**单独 checkout 就能绿**。
 - 若某一步需要别的仓的源码目录才过，那是**边界画错了**——停下来修边界，**不要**加 `replace ../xxx` 绕过。
 - 本机同时改多个仓时可用 `go.work` 联调，但**它不入库**（`.gitignore` 已挡）。
+- 真库腿（`internal/pgstore` 的四条 `*_Integration` / `TestApprovePromotesRevisionOnRealPG`）统一读
+  `RISK_TEST_DSN`，且必须指向 `*_test` 库（例 `postgres://…/tellurion_risk_test?sslmode=disable`，步骤见
+  `docs/runbook.md`「真库腿」）。未设置 ⇒ 显式 `SKIP: RISK_TEST_DSN not set`，不是假绿；旧名
+  `TELLURION_RISK_TEST_DSN` 已废弃，设它不会再跑任何用例。
 
 ## 3. 边界（硬约束）
 

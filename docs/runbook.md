@@ -94,14 +94,17 @@ docker compose -f deploy/compose.yaml restart risk
 psql "$RISK_DATABASE_URL" -c "SELECT to_regclass('risk.rule_defs'), to_regclass('risk.risk_events'), to_regclass('risk.audit_logs')"
 ```
 
-- 双跑指纹不变的自动自证（需真 PG）：
+- 真库腿统一入口（唯一位：`RISK_TEST_DSN`，指向 `*_test` 库，禁止活库）：
 
 ```bash
 RISK_TEST_DSN='postgres://user:pass@127.0.0.1:5432/tellurion_risk_test?sslmode=disable' \
-  go test ./internal/pgstore -run TestMigrationReplay -count=1
+  go test ./internal/pgstore -count=1 -v
 ```
 
-- 未设 `RISK_TEST_DSN` 时该用例 **skip**（不是假绿）。
+- 覆盖四条腿：`TestMigrationReplay_Integration` / `TestQueryEvents_Integration` /
+  `TestLegacyActorNullRow_Integration` / `TestApprovePromotesRevisionOnRealPG`。
+- 未设 `RISK_TEST_DSN` 时四条腿 **skip**（`SKIP: RISK_TEST_DSN not set`，不是假绿）。
+- 旧名 `TELLURION_RISK_TEST_DSN` 已废弃：设它不会再跑任何用例（避免「设一个名只跑一半腿」的假绿）。
 - `[已执行 2026-11-10]` 本机 PostgreSQL 16.15（`127.0.0.1:5432`，库 `tellurion_risk_test`）：
   `RISK_TEST_DSN=... go test ./internal/pgstore -count=1 -v` → 全部 PASS（含 `TestMigrationReplay_Integration`），
   重放指纹 `rows=0829cbeb6b6a8ba6375d827f007dded6032691dec8b39d4c72fd29271cb183ff` /

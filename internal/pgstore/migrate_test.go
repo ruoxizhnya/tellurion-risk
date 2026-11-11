@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -24,10 +23,7 @@ import (
 //	RISK_TEST_DSN='postgres://postgres:postgres@127.0.0.1:5432/tellurion_risk_test?sslmode=disable' \
 //	  go test ./internal/pgstore -run TestMigrationReplay -count=1
 func TestMigrationReplay_Integration(t *testing.T) {
-	dsn := os.Getenv("RISK_TEST_DSN")
-	if dsn == "" {
-		t.Skip("RISK_TEST_DSN not set")
-	}
+	dsn := requireTestDSN(t)
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

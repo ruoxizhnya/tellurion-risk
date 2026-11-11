@@ -8,7 +8,7 @@ package pgstore
 // HTTP 恒 409 `revision_conflict`。Memory Store 是覆盖写，单测全绿，PG 腿
 // 直到真跑 `POST /rules/{id}/approve` 才暴露。
 //
-// 需要 `TELLURION_RISK_TEST_DSN`（例：
+// 需要 `RISK_TEST_DSN`（例：
 // `postgres://postgres@127.0.0.1:55432/tellurion_risk_test?sslmode=disable`）。
 // 未设置时 skip，保证单仓默认 `go test ./...` 不需要外部依赖。
 
@@ -17,7 +17,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -29,10 +28,7 @@ import (
 const pgApproveParams = `{"atr_period":14,"base_multiplier":2.5,"bear_multiplier":3.5,"bull_multiplier":2.0,"sideways_multiplier":2.5}`
 
 func TestApprovePromotesRevisionOnRealPG(t *testing.T) {
-	dsn := os.Getenv("TELLURION_RISK_TEST_DSN")
-	if dsn == "" {
-		t.Skip("TELLURION_RISK_TEST_DSN not set")
-	}
+	dsn := requireTestDSN(t)
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
