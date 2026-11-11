@@ -303,7 +303,7 @@ verified-by: 2026-11-11 文档对齐审计 —— `SVC-CORE-RISK-RETIRE`（2026-
 > 读失败（PG 不可达）**不**降级成 `configured:false` + 空集，而是非 2xx（见 §2），否则又把
 > 「读不到」混进「空集」。
 > 用例：`TestMonitor_EmptySetIsDiscriminable`（两情形同窗口零记录，断言 `configured` 键存在且取值不同）、
-> `TestMonitor_PGUnreachableIsNotEmptySet`（读端口故障 ⇒ 500，不是空集）。
+> `TestMonitor_PGUnreachableIsNotEmptySet`（读端口故障 ⇒ 503 `dependency_unavailable`，不是空集、不是 500）。
 
 **事件 `payload` 的监控投影（生产侧约定）**
 
@@ -332,7 +332,7 @@ verified-by: 2026-11-11 文档对齐审计 —— `SVC-CORE-RISK-RETIRE`（2026-
 | 角色不足（读需 viewer / 写需 trader / 审批需 admin；`resolve` / `events` 另开 service） | 403 `forbidden` — **✅ 全部端点**（2026-10-25） | 不重试 |
 | 鉴权闸未装配 | 503 `auth_unavailable` — ✅ 全部端点（**拒绝而非放行**） | 不重试；等待运维装配 Authorizer |
 | 监控读取端口未装配 | 503 `dependency_unavailable` — ✅ | 不重试；服务端装配问题 |
-| 运行期 PostgreSQL 不可达（读 / 写 / 聚合） | 500 `internal`（不吐原文）；启动期则进程不监听、`/readyz` 503 | 按**服务不可用**处理：查 `/readyz`；只对幂等请求重试；`resolve` 腿失败 ⇒ run 拒绝启动 |
+| 运行期 PostgreSQL 不可达（读 / 写 / 聚合） | 503 `dependency_unavailable`（不吐原文）；启动期则进程不监听、`/readyz` 503 | 按**服务不可用**处理：查 `/readyz`；只对幂等请求重试；PG 恢复后同进程自愈（连接池换连）；`resolve` 腿失败 ⇒ run 拒绝启动 |
 | 规则库为空（`GET /rules`） | 200 `{"rules":[],"count":0}`（**不是错误**，也**不是** `null`） | 先建规则并审批；空库**不许**用默认限额开跑 |
 | 规则库有规则但无生效（approved/active）版本（`resolve latest`） | 404 `no_approved_rules` — ✅ `TestAPI_ResolveWithoutApprovedRules` | 审批激活后**重新发起一次**（人工动作，不是传输层自动重试） |
 | bundle 内参数出现词典外未知键 | **本仓不产生**（`GET .../bundle` 只回 canonical 快照原文，写侧已严格拒未知键）；若发生，消费方 core 的 `risk.PolicyFromSnapshot` 严格解码返回 error（无 HTTP 码；本仓 `rule.ParseBundle` 同样 fail-closed） | **拒绝开跑、不重试**；回查历史快照来源 / 是否手工改库 |
@@ -369,7 +369,7 @@ verified-by: 2026-11-11 文档对齐审计 —— `SVC-CORE-RISK-RETIRE`（2026-
 
 **fail-closed**：拿不到规则快照 = 不许开跑，不允许"先用默认限额"；没有凭证 / 角色不足 = 不服务，**不静默降级到匿名或 loopback 放行**（loopback-only insecure 仅限显式本地开发配置）。
 监控三端点在本切片就把这条钉死：`Authorizer` 未装配时返回 `503 auth_unavailable`，**不注册任何"匿名可读"后门**；
-`alerts` / `evaluate` 也不会把"读不到事件"或"解析失败的事件"当成"没有告警"——前者 503，后者计入 `invalid_events`。
+`alerts` / `evaluate` 也不会把"读不到事件"或"解析失败的事件"当成"没有告警"——前者 503 `dependency_unavailable`，后者计入 `invalid_events`。
 
 ## 3. 幂等性与重试
 
@@ -378,7 +378,7 @@ verified-by: 2026-11-11 文档对齐审计 —— `SVC-CORE-RISK-RETIRE`（2026-
 - `POST /rules/{id}/approve` 对**同一 revision** 重放幂等（同 `version_hash`）；状态机之外没有第二条路。
 - `POST /breakers` 必须带幂等键（`breaker_id`），同键同载荷重复调用不重复执行（200 `already_applied`）；
   同键不同载荷 → 409 `idempotency_conflict`。载荷身份 = `action + scope + reason`，`ts` 不参与。✅
-- `POST /events` 支持批量 + 去重键（`run_id + order_id + event_seq`）；部分失败返回 207，只重发失败项；整批落库失败返回 500，可整批重试（去重幂等）。✅
+- `POST /events` 支持批量 + 去重键（`run_id + order_id + event_seq`）；部分失败返回 207，只重发失败项；整批落库失败返回 503 `dependency_unavailable`（PG 不可达，可整批重试，去重幂等）或 500 `internal`（其它）。✅
 - `resolve` / `snapshots` / `rules`（GET）只读，可任意重试。
 - `monitor/exposure` / `monitor/alerts`（GET）只读，可任意重试；同一窗口两次查询顺序与数值一致（排序固定）。
 - `monitor/evaluate`（POST）**只读**：不写 `risk_events`、不写任何表、不推送外部通道；同一输入可安全重放。

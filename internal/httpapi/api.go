@@ -416,6 +416,10 @@ func classify(err error) (int, string) {
 		errors.Is(err, breaker.ErrInvalidAction),
 		errors.Is(err, breaker.ErrInvalidScope):
 		return http.StatusBadRequest, "invalid_params"
+	case isDependencyUnavailable(err):
+		// PG 不可达（停库 / 断连）：可判定、可重试，且必须与「服务端事故」区分，
+		// 否则调用方会把「重启就能好」当成 500。非依赖类错误仍落到下面的 500。
+		return http.StatusServiceUnavailable, "dependency_unavailable"
 	default:
 		return http.StatusInternalServerError, "internal"
 	}
@@ -429,9 +433,13 @@ func writeError(w http.ResponseWriter, err error) {
 	status, code := classify(err)
 	// 4xx 的原文透传给调用方（便于修正请求），5xx 才隐藏细节。
 	msg := err.Error()
-	if status == http.StatusInternalServerError {
+	switch status {
+	case http.StatusInternalServerError:
 		log.Printf("httpapi: internal error: %v", err)
 		msg = "internal error"
+	case http.StatusServiceUnavailable:
+		log.Printf("httpapi: dependency unavailable: %v", err)
+		msg = "dependency unavailable"
 	}
 	writeJSON(w, status, errorBody{Error: msg, Code: code})
 }

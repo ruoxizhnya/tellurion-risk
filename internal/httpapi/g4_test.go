@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -103,7 +104,8 @@ func TestAPI_EmptyRuleLibraryIsExplicit(t *testing.T) {
 	wantCode(t, resp.StatusCode, body, http.StatusNotFound, "no_approved_rules")
 }
 
-// 失败语义表第 2 类：PG 不可达 ⇒ 非 2xx（500 internal），不是「空集 200」。
+// 失败语义表第 2 类：PG 不可达 ⇒ 非 2xx，且是可判定的 503 `dependency_unavailable`
+// （不是「空集 200」，也不是把「重启就能好」报成服务端事故 500）。
 // 同时证明 monitor 的 configured 判别位不会把「读失败」伪装成 false。
 func TestMonitor_PGUnreachableIsNotEmptySet(t *testing.T) {
 	now := func() time.Time { return time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC) }
@@ -112,9 +114,13 @@ func TestMonitor_PGUnreachableIsNotEmptySet(t *testing.T) {
 		t.Fatalf("rule.New: %v", err)
 	}
 	events, err := event.New(event.Options{
-		Store:  event.NewMemory(),
-		Reader: errReader{err: errors.New("dial tcp 127.0.0.1:5445: connect: connection refused")},
-		Now:    now,
+		Store: event.NewMemory(),
+		Reader: errReader{err: &net.OpError{
+			Op:  "dial",
+			Net: "tcp",
+			Err: errors.New("connect: connection refused"),
+		}},
+		Now: now,
 	})
 	if err != nil {
 		t.Fatalf("event.New: %v", err)
@@ -125,7 +131,7 @@ func TestMonitor_PGUnreachableIsNotEmptySet(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(rec, req)
-		wantCode(t, rec.Code, rec.Body.String(), http.StatusInternalServerError, "internal")
+		wantCode(t, rec.Code, rec.Body.String(), http.StatusServiceUnavailable, "dependency_unavailable")
 	}
 }
 

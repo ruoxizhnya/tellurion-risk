@@ -124,7 +124,8 @@ run 后逐笔裁决事件回传、`POST /events` 的审计留痕（`risk_events.
 
 12. 批量 `POST /api/risk/events` → 逐条校验（缺 `run_id` / `order_id` / `ts` 记 failed）→
     合法条目按 `(run_id, order_id, event_seq)` 幂等落 `risk_events`：已存在 = duplicate（200 计数），
-    单条不合法 = 207 `partial_failure` + `failed[{index, code, message}]`；整批落库失败 = 500，重试整批
+    单条不合法 = 207 `partial_failure` + `failed[{index, code, message}]`；整批落库失败 = 503
+    `dependency_unavailable`（PG 不可达）或 500 `internal`（其它），可重试整批
     —— core 代机器回传这一步用 `service` 角色（ADR-0006）。
 13. `POST /api/risk/breakers` 可幂等下发熔断指令（`breaker_id` + 载荷身份 action/scope/reason）：
     首次 `applied`、同键同载荷 `already_applied`、同键不同载荷 409；落 `circuit_orders`。
@@ -154,11 +155,11 @@ run 后逐笔裁决事件回传、`POST /events` 的审计留痕（`risk_events.
 | 快照 hash 与内容不符（写入 / 读取 / ParseBundle） | 内容寻址被破坏（缓存串号 / 内容被改） | `ErrSnapshotMismatch`，500 `internal` + 告警日志，fail-loud 不吞 | ✅（三处同检：`store.go` 写/读 + `ParseBundle`） |
 | 服务不可用 | 拿不到规则快照 | **拒绝开跑**（不许用默认限额） | ✅（resolve 侧：`no_approved_rules` / `snapshot_not_found` 拒绝；core 已接（2026-11-09），`resolve_enabled: true` 时启动期取不到即失败） |
 | 规则被改但 run 里没记 hash | 结果不可复现 | `risk_rules_hash` 必写进结果 | ✅（2026-10-25，QT-66 的 core 腿：`core:cmd/analysis/wiring/risk_rules.go` 每次 run 取一次并写进 `quant.run_provenance`；未接入 = 空串 + `not_configured`，取不到 = run `failed`） |
-| 事件回传失败 | 留痕缺失 | 批量原子落库：整批失败 500 后重试整批（去重键幂等）；单条不合法 207 只重发 failed；允许延迟，不允许丢 | ✅ 两侧都兑现（2026-10-25 二批）：端点侧 `internal/event` + `risk.risk_events` 主键去重；生产侧 core 的 sink 改成**持久 outbox**（`quant.alert_outbox`，core Migration 060）——告警先落一行，relay 每 `events_relay_interval` 取 pending 重投，触 `events_max_attempts` 转 `failed` 终态**但保留行**，不再有「队列满即丢 / 重启即丢」。**两条残留如实登记**：① `alert_id` 撞键（同秒重启能造出同 id 的两条告警）的那条不落新行，core 侧转 Warn 点名，若既有行已是 `failed` 则这条到不了本仓；② 「core 真进程 → risk 真进程 → `monitor/alerts` 读出非空」的端到端腿仍未跑过（core 侧用 `httptest` + 内存替身按 wire 逐键自证）。见 `tellurion:docs/TASKS.md` QT-42 X3c core 腿二批 |
+| 事件回传失败 | 留痕缺失 | 批量原子落库：整批失败（503 `dependency_unavailable` 依赖不可达 / 500 `internal` 其它）后重试整批（去重键幂等）；单条不合法 207 只重发 failed；允许延迟，不允许丢 | ✅ 两侧都兑现（2026-10-25 二批）：端点侧 `internal/event` + `risk.risk_events` 主键去重；生产侧 core 的 sink 改成**持久 outbox**（`quant.alert_outbox`，core Migration 060）——告警先落一行，relay 每 `events_relay_interval` 取 pending 重投，触 `events_max_attempts` 转 `failed` 终态**但保留行**，不再有「队列满即丢 / 重启即丢」。**两条残留如实登记**：① `alert_id` 撞键（同秒重启能造出同 id 的两条告警）的那条不落新行，core 侧转 Warn 点名，若既有行已是 `failed` 则这条到不了本仓；② 「core 真进程 → risk 真进程 → `monitor/alerts` 读出非空」的端到端腿仍未跑过（core 侧用 `httptest` + 内存替身按 wire 逐键自证）。见 `tellurion:docs/TASKS.md` QT-42 X3c core 腿二批 |
 | 熔断指令重复 | 重复平仓 | 幂等键 `breaker_id`：同键同载荷 → 200 `already_applied`；同键不同载荷 → 409（不执行） | ✅（X3d：`internal/breaker` + `circuit_orders` 主键） |
 | 鉴权闸未装配 / 角色不足 | 规则与审计被匿名读写 | 所有端点统一 fail-closed：未装配 `Authorizer` → 503，无凭证 → 401，越权 → 403 | ✅（`httpapi.requireAuth`；`TestAuth_ThreeStatesAndActor` / `TestRouteTableEqualsPolicyTable`） |
 | core 调本仓没带 `service` 凭证 | run 前取快照失败 ⇒ 按裁-11 该 run `failed` + `risk_rules_unavailable` | 策略表对 `resolve` / `events` 并列开 `service`（与 `trader` / `admin` 同在一条 `Roles`）；`audit` 与管理面不开 | ✅（2026-10-25 裁-17 + ADR-0006；`TestPolicy_ServiceRoleScope`）。**签发与注入不在本仓**（core QT-71 / kit KT-09） |
-| 监控读不到事件（读取端口未装配 / 库错误） | 把「读不到」显示成「没有敞口 / 没有告警」 | `503 dependency_unavailable` 或 500；绝不返回空报告冒充成功 | ✅（`event.ErrMonitorUnavailable`；`TestMonitor_RequiresReader` / G4 的 `TestMonitor_PGUnreachableIsNotEmptySet`） |
+| 监控读不到事件（读取端口未装配 / 库错误） | 把「读不到」显示成「没有敞口 / 没有告警」 | `503 dependency_unavailable`（依赖不可达 / 端口未装配）或 500 `internal`（其它读取错误）；绝不返回空报告冒充成功 | ✅（`event.ErrMonitorUnavailable` + `httpapi.isDependencyUnavailable`；`TestMonitor_RequiresReader` / G4 的 `TestMonitor_PGUnreachableIsNotEmptySet`） |
 | 空集不可判别（未接入 vs 没触发） | 把「core 没接」读成「没触发」或反向 | 三个 monitor 响应都带 `configured` 判别位（部署声明 `RISK_EVENTS_EXPECTED`，缺省 false）；`false` = 未接入，`true`+空 = 没触发 | ✅ G4（`TestMonitor_EmptySetIsDiscriminable`；契约见 `api-schema.md` §1「空集的两种含义」） |
 | 本仓停服 / 不可达（core 两条腿） | 裁决链断 | `resolve` 腿：连接错误 / 超时 / 非 2xx ⇒ 启动/run **failed**，**不重试、不回落 `risk_manager.*`**（已删；`resolve_enabled=false` 才走 builtin 并打 Warn）；`events` 腿：连接错误 ⇒ 持久 outbox 重投（去重键幂等），不阻塞 run | ✅ 本仓侧已证（`TestDrill_StoppedServiceFailsLoud`）；core 侧演练已执行（2026-11-10，`SVC-RISK-G4` 收口：停服前后各一次真退出码） |
 | 敞口字段缺口 / 窗口过大 | 低报风险 | 缺字段计入 `unpriced_events` / `unsigned_events`（不补零）；窗口 > 5000 条事件 → 400，不截断 | ✅（`TestExposure_AggregatesFromRiskEvents` / `TestExposure_RefusesTruncatedAggregate`） |
