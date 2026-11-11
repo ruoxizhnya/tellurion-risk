@@ -1,6 +1,6 @@
 name: CI
 
-# 本仓最小门禁（ADR-D29 R2「单仓可自证」）：格式 + 构建 + 静态检查 + 测试。
+# 本仓最小门禁（ADR-D29 R2「单仓可自证」）：格式 + 构建 + 静态检查 + 测试（含 race）。
 # 本仓**不得** checkout 其他仓 —— 需要别的仓源码才能过，就是边界画错了。
 on:
   push:
@@ -17,7 +17,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26.11"
           cache: true
 
       - name: gofmt（未格式化即红）
@@ -37,3 +37,12 @@ jobs:
 
       - name: Test
         run: go test ./... -count=1
+
+      # race 需要 cgo + gcc（ubuntu-latest 自带）；本机 Windows 无 gcc，只能由 CI 验证。
+      - name: Test（-race）
+        run: go test -race ./... -count=1
+
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
+          "$(go env GOPATH)/bin/staticcheck" ./...
