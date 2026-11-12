@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-11-12
-verified-by: 2026-11-12 `X-DEP-BUMP-CONSUMERS` 回补 `govulncheck` 门（首轮 `c19634a` 只升 pin 未加门；本次补 CI 步并真做降版破坏验证，归档条目状态由「部分完成」改回 ✅）；W7 四单收口（`RISK-GRACEFUL-SHUTDOWN` / `RISK-PGDOWN-503` / `RISK-TEST-DSN-UNIFY` / `RISK-GOMOD-DIRECT`：代码 + 文档 + 破坏验证 + 真栈演练，原文与施工记录移入 archive）——此前 2026-11-11 全面审查 W7 台账立单（A5 授权）——新立 4 条六字段单（`RISK-GRACEFUL-SHUTDOWN` / `RISK-PGDOWN-503` / `RISK-TEST-DSN-UNIFY` / `RISK-GOMOD-DIRECT`），证据坐标引 ODR-069 / ODR-072（`tellurion-docs:docs/archive/odr/`）；本轮只立单不修复。此前 2026-11-11 新增 `RISK-CONTRACTS-SNAPSHOT-MIGRATION`（跨仓 ADR-040：`contracts/risk` 为形状唯一真相，本仓改别名引用，`Bundle`/`ParseBundle` 留本仓）；`QT-42` ✅ 订正（2026-11-10：正文「收口记录」早已判 ✅，标题漏改；四条未落项均在 ⑥ 边界外且由 CT-03 / SVC-CORE-RISK-RETIRE / 数值口径裁决 / `risk.limits` 遗留空表裁决关闭，本仓零代码改动）；`SVC-RISK-G3` 收口（2026-11-10：core `risk_manager.*` 读点 14→0、core 新增新旧限额逐字段对拍测试、真 PG + 真 risk 进程的告警回传跑出 `risk.risk_events` 真实行与 `monitor/alerts count:1`、停服后 outbox `failed/attempts=3` 不静默丢；本仓零代码改动）；`SVC-RISK-G4` 收口（2026-11-10：core 侧停服前后各一次真退出码，补齐 ⑤③）；`QT-74` 收口（2026-11-10：迁 contracts 由 CT-03、core 消费由 SVC-CORE-RISK-RETIRE 关掉，数值口径 1:1 零换算，`risk.limits` 遗留空表）；`SVC-RISK-G1` 收口（2026-11-10：Docker 引擎 29.8.0 起来后 `docker compose up --wait` EXIT=0、pg/risk 双 healthy，`/healthz` 200、`/readyz` 200，PG 停→503、恢复→200，翻 ✅）；QT-42 补丁 —— PG Store 审批跃迁修复（`updateRule` 先覆盖后插入）+ 首条真 PG 回归腿 `internal/pgstore/approve_pg_test.go`（2026-11-07，破坏验证真做真还原）；QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两条用例 + 破坏验证 + 真 PG 两条集成腿，2026-11-07 补齐后 ✅）；SVC-RISK-G4 施工（2026-11-07）—— 失败语义五类 / 超时重试口径 / monitor `configured` 判别位 / runbook / 本仓侧停服演练；此前 SVC-RISK-G0 完成（Dockerfile + deploy/compose + 默认 8089 与 TCP 探针）；**2026-11-10**：本机 PostgreSQL 16.15 @ `127.0.0.1:5432` 上补齐真 PG 腿（`internal/pgstore` 全量用例全 PASS、`go test ./...` 6 包 ok、runbook 的 psql 审计/熔断/表存在三条腿）；Docker/compose 腿随后（同日）补跑通过，见 `SVC-RISK-G1`
+verified-by: 2026-11-12 挂起任务处置批次（主任指令）——`RISK-RULE-SEED` 重开 ⬜（2026-11-10 空库部署已触发重开条件；core 出厂 resolve_enabled=true ⇒ 新栈无 seed 起不来；seed=现库 4 条 active 规则，落地后补跑归档真栈 hash 基线腿）、`RISK-CREDENTIAL-PATH` ✅ 收口（与 core 侧同一证据批次，200/401/403，证据落 core 归档 `a916a51`）；`RISK-EVENTS-COVERAGE` 维持 ⏸（events_enabled 出厂 false）。此前： 2026-11-12 `X-DEP-BUMP-CONSUMERS` 回补 `govulncheck` 门（首轮 `c19634a` 只升 pin 未加门；本次补 CI 步并真做降版破坏验证，归档条目状态由「部分完成」改回 ✅）；W7 四单收口（`RISK-GRACEFUL-SHUTDOWN` / `RISK-PGDOWN-503` / `RISK-TEST-DSN-UNIFY` / `RISK-GOMOD-DIRECT`：代码 + 文档 + 破坏验证 + 真栈演练，原文与施工记录移入 archive）——此前 2026-11-11 全面审查 W7 台账立单（A5 授权）——新立 4 条六字段单（`RISK-GRACEFUL-SHUTDOWN` / `RISK-PGDOWN-503` / `RISK-TEST-DSN-UNIFY` / `RISK-GOMOD-DIRECT`），证据坐标引 ODR-069 / ODR-072（`tellurion-docs:docs/archive/odr/`）；本轮只立单不修复。此前 2026-11-11 新增 `RISK-CONTRACTS-SNAPSHOT-MIGRATION`（跨仓 ADR-040：`contracts/risk` 为形状唯一真相，本仓改别名引用，`Bundle`/`ParseBundle` 留本仓）；`QT-42` ✅ 订正（2026-11-10：正文「收口记录」早已判 ✅，标题漏改；四条未落项均在 ⑥ 边界外且由 CT-03 / SVC-CORE-RISK-RETIRE / 数值口径裁决 / `risk.limits` 遗留空表裁决关闭，本仓零代码改动）；`SVC-RISK-G3` 收口（2026-11-10：core `risk_manager.*` 读点 14→0、core 新增新旧限额逐字段对拍测试、真 PG + 真 risk 进程的告警回传跑出 `risk.risk_events` 真实行与 `monitor/alerts count:1`、停服后 outbox `failed/attempts=3` 不静默丢；本仓零代码改动）；`SVC-RISK-G4` 收口（2026-11-10：core 侧停服前后各一次真退出码，补齐 ⑤③）；`QT-74` 收口（2026-11-10：迁 contracts 由 CT-03、core 消费由 SVC-CORE-RISK-RETIRE 关掉，数值口径 1:1 零换算，`risk.limits` 遗留空表）；`SVC-RISK-G1` 收口（2026-11-10：Docker 引擎 29.8.0 起来后 `docker compose up --wait` EXIT=0、pg/risk 双 healthy，`/healthz` 200、`/readyz` 200，PG 停→503、恢复→200，翻 ✅）；QT-42 补丁 —— PG Store 审批跃迁修复（`updateRule` 先覆盖后插入）+ 首条真 PG 回归腿 `internal/pgstore/approve_pg_test.go`（2026-11-07，破坏验证真做真还原）；QT-80 施工 —— risk_events.actor 留痕（claims 取值 + 两条用例 + 破坏验证 + 真 PG 两条集成腿，2026-11-07 补齐后 ✅）；SVC-RISK-G4 施工（2026-11-07）—— 失败语义五类 / 超时重试口径 / monitor `configured` 判别位 / runbook / 本仓侧停服演练；此前 SVC-RISK-G0 完成（Dockerfile + deploy/compose + 默认 8089 与 TCP 探针）；**2026-11-10**：本机 PostgreSQL 16.15 @ `127.0.0.1:5432` 上补齐真 PG 腿（`internal/pgstore` 全量用例全 PASS、`go test ./...` 6 包 ok、runbook 的 psql 审计/熔断/表存在三条腿）；Docker/compose 腿随后（同日）补跑通过，见 `SVC-RISK-G1`
 completed-2026-11-12: `RISK-GRACEFUL-SHUTDOWN`（`b547110`）/ `RISK-PGDOWN-503`（`d94358e`）/ `RISK-TEST-DSN-UNIFY`（`27a3e48`）/ `RISK-GOMOD-DIRECT`（`4a14b9c`）✅，原文与施工记录在 `docs/archive/tasks-archive-2026-11.md` §三
 completed-2026-11-11: `RISK-CONTRACTS-SNAPSHOT-MIGRATION` ✅（快照形状 / 冻结词表 / `DomainSnapshotHash` / 四个跨仓哨兵改 `contracts/risk` 别名 + `SnapshotHash` 委托；`go.mod` pin `v0.10.0`；对拍腿 `TestSnapshotHash_DelegatesToContracts`；原文与施工记录在 `docs/archive/tasks-archive-2026-11.md`）
 ---
@@ -16,15 +16,21 @@ completed-2026-11-11: `RISK-CONTRACTS-SNAPSHOT-MIGRATION` ✅（快照形状 / �
 
 > 本节 = 本轮（2026-11-11）台账重整时登记的遗留边界。此前已收口单的正文与施工记录全部在归档文件里。
 
-### RISK-RULE-SEED · 出厂规则集 seed 缺失 [P1] ⏸
+### RISK-RULE-SEED · 出厂规则集 seed 缺失 [P1] ⬜
 
-- **① 目标**：新部署的空库能拿到一套可用的出厂审批规则，而不是只有本机库里手写的那 4 条。
-- **② 上下文**：验收时用的 4 条规则（额度 / 单笔上限 / 白名单等）是直接写进本机 PG 的，**仓库里没有 seed 脚本、迁移或启动注入**；`docs/db-schema.md` 只描述表形状。空库时 `resolve` 返回 `no_approved_rules`，core（`resolve_enabled: true` 出厂）**启动失败**——这是 fail-closed 设计，不是「空集放行」；缺少 seed 的后果是新部署起不来，属可用性问题。
-- **③ 要求**：① 出厂规则以**可重放、幂等**的形式入库（seed SQL / 迁移二选一，写进 DDL 播放顺序）；② 规则 hash 与版本号可复现，便于 `contracts/risk` 的对拍；③ 文档写明「空规则集」的语义与告警。
-- **④ 约束与非目标**：不改规则表结构与快照 hash 算法（`contracts/risk` 冻结）；不做规则的可视化编辑。
-- **⑤ 验收**：空库按标准流程起服务后，规则条数 = 出厂条数且 hash 与固定向量一致；破坏验证 = 不跑 seed ⇒ 启动告警或拒绝进入「已接入」状态。
-- **⑥ 边界**：规则真相源归本仓；core 侧只消费快照（见 `tellurion:CORE-RISK-SNAPSHOT-RELOAD`）。
-- **重开条件**：任何一次空库部署验收，或规则集需要随版本发布。
+> **重开记录（2026-11-12，挂起任务处置批次，主任指令）**：重开条件「任何一次空库部署验收」已触发——
+> 2026-11-10 系统实例整库重建（`tellurion-data:docs/archive/system-pg-init-2026-11-10.md`），
+> 当时规则靠手写进库。core 出厂 `resolve_enabled=true` + 本仓空集 `ErrNoApprovedRules`
+> （`internal/rule/service.go:397-404`）⇒ **任何全新 full 栈今天起不来**，是已发生的可用性缺口。
+> 本单落地后同时解锁归档 `RISK-CONTRACTS-SNAPSHOT-MIGRATION` 施工记录明言「未执行（如实）」的
+> 真栈 hash 基线腿（补齐条件原文：本单落地后按 full profile 复跑）。
+
+- **① 目标**：新部署的空库启动后即有一套可用的 active 规则，core full profile 能起、resolve 返回非空且 hash 可复现。
+- **② 上下文**：现部署库的 4 条规则是直接写进 PG 的，仓库无 seed 脚本/迁移/启动注入。2026-11-12 实测 `risk.rule_defs`：`global-position-sizing-v1` / `global-regime-v1` / `global-stop-loss-v1` / `global-take-profit-v1`，均 `active` revision 1。resolve 消费 `Filter{Active: true}`（「approved」是 promote 前瞬态，不是 resolve 判据）。
+- **③ 要求**：① seed 内容 = 上述 4 条规则，参数值**施工时从现库捕获、主任审过再入库**（工程默认，不是投资建议）；② 可重放、幂等：同 rule_id 已存在 ⇒ 跳过，**绝不覆盖手改过的规则**；③ seed 走与手写相同的校验/审批状态机（终态 active）；④ hash 固定向量：测试以绝对数值断言 `version_hash` / `risk_rules_hash`；seed 内容与现库一致时，快照 hash 应复现 core `CORE-COMPOSE-UNIFY` 施工记录观测到的 `84a95d7d…` 前缀——不一致则逐项排查 seed 与现库差异，**不许放宽断言**；⑤ 落地后按 full profile 复跑归档 hash 基线腿并记录。
+- **④ 约束与非目标**：不改规则表结构与快照 hash 算法（`contracts/risk` 冻结）；不做规则可视化编辑；不动 core。
+- **⑤ 验收**：空库 → 标准流程起服务 → resolve 200 非空 + hash = 固定向量；重跑 seed 幂等（hash 不变、无重复行）；破坏验证 = 改一条规则参数后重跑 seed ⇒ 参数保留（真做真还原）；归档 hash 腿复跑记录在案。
+- **⑥ 边界**：本仓 seed 机制 + 测试 + 归档补记；core 侧只消费快照（见 `tellurion:CORE-RISK-SNAPSHOT-RELOAD`）。
 
 ### RISK-EVENTS-COVERAGE · 事件回传链路（`risk_service.events_enabled`）未覆盖 [P2] ⏸
 
@@ -36,15 +42,20 @@ completed-2026-11-11: `RISK-CONTRACTS-SNAPSHOT-MIGRATION` ✅（快照形状 / �
 - **⑥ 边界**：接收面归本仓；投递面归 `tellurion`（`cmd/analysis/wiring/risk_events.go`）。
 - **重开条件**：事件回传从「默认关」转为任一部署默认开。
 
-### RISK-CREDENTIAL-PATH · 带凭证路径未取证（`RISK_SERVICE_RESOLVE_TOKEN`）[P1] ⏸
+### RISK-CREDENTIAL-PATH · 带凭证路径未取证（`RISK_SERVICE_RESOLVE_TOKEN`）[P1] ✅（2026-11-12）
+
+> **收口记录（2026-11-12，挂起任务处置批次，主任指令）**：与 `tellurion:CORE-RISK-CREDENTIAL-PATH`
+> 同一证据批次真跑取证完成——带真 `JWT_SECRET` + `RISK_SERVICE_RESOLVE_TOKEN` 起 full profile，
+> resolve 走通，三条状态码实测为 **200 / 401 / 403**（无凭证 401、凭证有效但角色不足 403）。
+> 证据原文（命令、状态码、日志）落 core 侧归档施工记录（commit `a916a51`），本仓只留指针；
+> 本仓校验侧零代码改动（策略表 `service` 角色本就只开 resolve / events 两条）。
 
 - **① 目标**：本仓在**非回环、带 token** 的形态下真被 core 调通过一次。
 - **② 上下文**：`ADR-0005` / `ADR-0006` 已把鉴权与两条服务间链路写死，`QT-77` 的端到端只跑过「回环开放 / 空 token」；`RISK_SERVICE_RESOLVE_TOKEN` 同时非空的生产形态**从未真跑**。core 侧同一缺口登记为 `tellurion:CORE-RISK-CREDENTIAL-PATH`。
 - **③ 要求**：① 真 token 起本仓 + core，跑 resolve 200；② 错 token / 缺 token 各跑一次 401；③ 记录真实命令、状态码与日志原文。
 - **④ 约束与非目标**：不改策略表与鉴权实现；token 只走环境变量。
-- **⑤ 验收**：三条状态码（200 / 401 / 401）；破坏验证 = 换错 token ⇒ 401。
+- **⑤ 验收**：三条状态码（200 / 401 / 403）；破坏验证 = 换错 token ⇒ 401。
 - **⑥ 边界**：本仓校验侧；core 侧装配归 `tellurion`。
-- **重开条件**：任何一次真实部署验收。
 
 ## 二、跨仓指针（不在本仓，勿双写）
 
