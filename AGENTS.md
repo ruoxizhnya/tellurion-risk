@@ -68,6 +68,7 @@ go test ./...
 ```
 
 - 这三条是 R1/R2 的判据：**单独 checkout 就能绿**。
+- **CI 覆盖面**（`.github/workflows/ci.yml`，Go `1.26.11`）：gofmt 未格式化即红 → `go build ./...` → `go vet ./...` → `govulncheck ./...` → `go test ./... -count=1` → `go test -race ./... -count=1` → `staticcheck v0.8.2 ./...`；`-race` 依赖 cgo + gcc（`ubuntu-latest` 自带），本机 Windows 无 gcc，race 腿只能由 CI 验证。
 - 若某一步需要别的仓的源码目录才过，那是**边界画错了**——停下来修边界，**不要**加 `replace ../xxx` 绕过。
 - 本机同时改多个仓时可用 `go.work` 联调，但**它不入库**（`.gitignore` 已挡）。
 - 真库腿（`internal/pgstore` 的四条 `*_Integration` / `TestApprovePromotesRevisionOnRealPG`）统一读
