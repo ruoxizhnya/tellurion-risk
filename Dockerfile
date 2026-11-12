@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # tellurion-risk · 风控控制面服务（ADR-036 G0；同步裁决仍留 core）
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26.11-alpine AS builder
 
 WORKDIR /src
 RUN apk add --no-cache git
