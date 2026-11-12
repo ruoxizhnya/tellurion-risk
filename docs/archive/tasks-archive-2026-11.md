@@ -21,7 +21,7 @@
 | RISK-PGDOWN-503 | PG 不可达 default 分支回 500 而非 503（D5=a） | 2026-11-12 | `d94358e` | [原文](#RISK-PGDOWN-503) |
 | RISK-TEST-DSN-UNIFY | 测试 DSN 两个 env 名并存且均未登记 | 2026-11-12 | `27a3e48` | [原文](#RISK-TEST-DSN-UNIFY) |
 | RISK-GOMOD-DIRECT | contracts 被直接 import 却标 `// indirect` | 2026-11-12 | `4a14b9c` | [原文](#RISK-GOMOD-DIRECT) |
-| X-DEP-BUMP-CONSUMERS | 消费方依赖抬升（kit v0.5.0 / go 1.26.11） | 2026-11-12 | `c19634a` | [施工记录](#X-DEP-BUMP-CONSUMERS) |
+| X-DEP-BUMP-CONSUMERS | 消费方依赖抬升（kit v0.5.0 / go 1.26.11）+ govulncheck 门 | 2026-11-12 | `c19634a`（pin）、回补见本条 | [施工记录](#X-DEP-BUMP-CONSUMERS) |
 | X-AGENTS-DEPENDENCY-TABLE | 依赖表按 go.mod 实测对齐 | 2026-11-12 | `74cfbf5` | [施工记录](#X-AGENTS-DEPENDENCY-TABLE) |
 | X-CI-RACE-STATICCHECK | CI 增加 `-race` 与 `staticcheck` | 2026-11-12 | `147eb56` | [施工记录](#X-CI-RACE-STATICCHECK) |
 
@@ -957,7 +957,7 @@
 > 按台账口径，跨仓 X 伞**不在各仓新开六字段任务单**；本节只记本仓实际施工与证据。`docs/TASKS.md` 保持不动，不留开放项。
 
 <a id="X-DEP-BUMP-CONSUMERS"></a>
-### X-DEP-BUMP-CONSUMERS · 消费方依赖抬升（本仓部分）✅
+### X-DEP-BUMP-CONSUMERS · 消费方依赖抬升（本仓部分）✅（2026-11-12；首轮为「部分完成：缺 govulncheck 门」，已回补）
 
 > **施工记录（2026-11-12，`c19634a`）**：
 > - **前置事实**：`tellurion-kit v0.5.0`（tag `c794171`）已发版并推远端，工具链底线 `go 1.26.11`；kit 自身 pin `pgx v5.11.0`。
@@ -966,6 +966,9 @@
 > - **破坏验证（降回旧 pin 对照）**：恢复旧 `go.mod/go.sum`（kit `v0.2.0` / `go 1.25.0` / pgx `v5.7.5`）后 `govulncheck ./...` **EXIT=3**，`Your code is affected by 12 vulnerabilities from 2 modules and the Go standard library.`，ID：GO-2026-5004 / 5970 / 6603 / 6607 / 6608 / 6611 / 6612 / 6613 / 6617 / 6629 / 6809 / 6859（x/net、x/text、pgx 与 Go 标准库）。按字节还原新 pin 后复跑 EXIT=0（已核对 `go.mod` 哈希一致）。
 > - **门禁**：`go build/vet/test ./... -count=1` 全绿；另用独立 PG 容器跑真库腿 **8 PASS / 0 SKIP / 0 FAIL**（确认 pgx `v5.11.0` 下迁移与四条真库腿无回归）。
 > - **边界**：只动本仓 `go.mod/go.sum`；其余仓由各自 `X-DEP-BUMP-CONSUMERS` 承担。
+> - **回补（2026-11-12）**：首轮只跑了本地 `govulncheck`、**没有进 CI 门**，属「pin 升了、门没加」的半完成；`.github/workflows/ci.yml` 在 `Vet` 之后新增 `Govulncheck` 步（`go run golang.org/x/vuln/cmd/govulncheck@latest ./...`）。
+> - **回补验收（真实输出）**：`govulncheck ./...` → `Your code is affected by 0 vulnerabilities.`，EXIT=0。
+> - **回补破坏验证（真做真还原）**：`go mod edit` 把 kit 降回 `v0.2.0`、pgx 降回 `v5.7.3` 并 `go mod tidy` ⇒ `GO-2026-5004`、EXIT=1；逐字节还原 `go.mod` / `go.sum`（SHA256 与降版前一致：`go.mod B79D78DE…75F7`、`go.sum 64BF5962…63F0`）后复跑 EXIT=0；`gofmt -l` 空、`build/vet/test` 全绿。
 
 <a id="X-AGENTS-DEPENDENCY-TABLE"></a>
 ### X-AGENTS-DEPENDENCY-TABLE · 依赖表按 go.mod 实测对齐（本仓部分）✅
