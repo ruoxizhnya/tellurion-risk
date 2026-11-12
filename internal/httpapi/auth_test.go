@@ -140,14 +140,12 @@ func TestAuth_ThreeStatesAndActor(t *testing.T) {
 	wantCode(t, resp.StatusCode, body, http.StatusServiceUnavailable, "auth_unavailable")
 }
 
-// TestAuth_OpenAccessOnLoopback 锁死显式关闭鉴权的语义：无 secret + 回环时
-// TokenService 未启用，所有端点放行，审计 actor 用显式常量（仍不为空）。
-func TestAuth_OpenAccessOnLoopback(t *testing.T) {
-	disabled := auth.NewTokenService(auth.Config{})
-	if disabled.Enabled() {
-		t.Fatal("expected disabled token service")
-	}
-	h := newHarnessWithAuthorizer(t, NewAuthorizer(disabled))
+// TestAuth_ExplicitOpenAccessStillAllowsWrites 锁死**第 3 态**（无 secret +
+// 显式 AUTH_INSECURE_EXPOSURE=loopback-published）的语义：写面放行，审计 actor
+// 用显式常量（仍不为空）。这个替身只能由启动闸在第 3 态装配，不得用来表达
+// 「忘了配 secret」。
+func TestAuth_ExplicitOpenAccessStillAllowsWrites(t *testing.T) {
+	h := newHarnessWithAuthorizer(t, NewOpenAccessAuthorizer())
 
 	resp, body := h.doAuth(t, http.MethodPost, "/api/risk/rules", createBody, "")
 	if resp.StatusCode != http.StatusCreated {
@@ -163,4 +161,69 @@ func TestAuth_OpenAccessOnLoopback(t *testing.T) {
 	if len(audit.Audit) != 1 || audit.Audit[0].Actor != ActorOpenAccess {
 		t.Fatalf("open-access actor must be %q, got %+v", ActorOpenAccess, audit.Audit)
 	}
+}
+
+// TestAuth_NoSecretFailsClosedOnWrites 锁死**第 2 态**：无 secret 且未显式声明
+// 开放时，进程能起、读端点公开，但**所有写口径端点**一律 503 auth_unavailable
+// ——「没配 secret」绝不等于「已通过」。
+func TestAuth_NoSecretFailsClosedOnWrites(t *testing.T) {
+	disabled := auth.NewTokenService(auth.Config{})
+	if disabled.Enabled() {
+		t.Fatal("expected disabled token service")
+	}
+	h := newHarnessWithAuthorizer(t, NewAuthorizer(disabled))
+
+	writes := []struct{ method, path, body string }{
+		{http.MethodPost, "/api/risk/rules", createBody},
+		{http.MethodPut, "/api/risk/rules/r-sl", createBody},
+		{http.MethodPost, "/api/risk/rules/r-sl/approve", `{"revision":1}`},
+		{http.MethodPost, "/api/risk/resolve", `{"ruleset":"latest"}`},
+		{http.MethodPost, "/api/risk/events", `{"events":[]}`},
+		{http.MethodPost, "/api/risk/breakers", `{"command_id":"c-1"}`},
+	}
+	for _, tc := range writes {
+		resp, body := h.doAuth(t, tc.method, tc.path, tc.body, "")
+		wantCode(t, resp.StatusCode, body, http.StatusServiceUnavailable, "auth_unavailable")
+	}
+
+	// 读端点保持公开（不是 401/403/503）。
+	resp, body := h.doAuth(t, http.MethodGet, "/api/risk/rules", "", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("read endpoint must stay public in state 2: %d %s", resp.StatusCode, body)
+	}
+	// monitor/evaluate 是唯一只读 POST，按读口径公开。
+	resp, body = h.doAuth(t, http.MethodPost, "/api/risk/monitor/evaluate", `{}`, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("read-only POST must stay public in state 2: %d %s", resp.StatusCode, body)
+	}
+}
+
+// TestIsWriteRequestClassifiesMutatingRoutes 防止新写端点漏进「读公开」的例外：
+// 策略表里所有非 GET 路由都必须算写口径，唯一例外是只读的 monitor/evaluate。
+func TestIsWriteRequestClassifiesMutatingRoutes(t *testing.T) {
+	for pattern := range PolicyEntries() {
+		method, path, ok := splitPattern(pattern)
+		if !ok {
+			t.Fatalf("unparsable policy pattern %q", pattern)
+		}
+		req, err := http.NewRequest(method, path, nil)
+		if err != nil {
+			t.Fatalf("new request %q: %v", pattern, err)
+		}
+		req.Pattern = pattern // ServeMux 路由后由标准库填写；这里直接钉住。
+		want := method != http.MethodGet && pattern != "POST /api/risk/monitor/evaluate"
+		if got := isWriteRequest(req); got != want {
+			t.Errorf("isWriteRequest(%q) = %t, want %t", pattern, got, want)
+		}
+	}
+}
+
+// splitPattern 拆分 "METHOD /path" 形式的路由模式。
+func splitPattern(pattern string) (method, path string, ok bool) {
+	for i := 0; i < len(pattern); i++ {
+		if pattern[i] == ' ' {
+			return pattern[:i], pattern[i+1:], true
+		}
+	}
+	return "", "", false
 }

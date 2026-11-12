@@ -16,7 +16,15 @@ services:
       RISK_DATABASE_URL: ${RISK_DATABASE_URL:-postgres://postgres:postgres@host.docker.internal:5432/tellurion?sslmode=disable}
       # 凭证来源（QT-77）：risk 是**验签方**，只需要共享 JWT_SECRET，不持有
       # 任何 *_TOKEN；签发/轮换口径见 tellurion:docs/SPEC.md 的「服务间凭证」节。
-      JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
+      # **没有默认 secret**：`dev-only-change-me` 这类公开字符串等于让任何人都能
+      # 自签 token。缺省留空 ⇒ 有 secret 才全闸；没有 secret 时按下一行的显式声明
+      # 决定写面是否开放。
+      JWT_SECRET: ${JWT_SECRET:-}
+      # 容器必须绑 0.0.0.0，端口已发布到宿主 127.0.0.1 —— 这正是
+      # `loopback-published` 的定义。声明后：无 secret ⇒ 第 3 态（写面开放 +
+      # 启动 WARN 点名）；有 secret ⇒ 第 1 态（全闸）。不声明 + 非回环 + 无
+      # secret ⇒ 启动闸直接拒绝。
+      AUTH_INSECURE_EXPOSURE: ${AUTH_INSECURE_EXPOSURE:-loopback-published}
       # G4：monitor 的 `configured` 判别位是**部署声明**（不是探测）。必须与 core
       # 的 risk_service.events_enabled 保持一致；缺省 false 与 core 出厂值对齐。
       RISK_EVENTS_EXPECTED: ${RISK_EVENTS_EXPECTED:-false}

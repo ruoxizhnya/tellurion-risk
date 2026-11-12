@@ -45,18 +45,37 @@ const defaultShutdownTimeout = 10 * time.Second
 func main() {
 	addr := flag.String("addr", defaultAddr, "listen address")
 	dsn := flag.String("dsn", os.Getenv("RISK_DATABASE_URL"), "PostgreSQL DSN (empty = in-memory store)")
-	jwtSecret := flag.String("jwt-secret", envFirst("JWT_SECRET", "AUTH_JWT_SECRET"), "JWT secret shared with analysis (empty = open access on loopback only)")
+	jwtSecret := flag.String("jwt-secret", envFirst("JWT_SECRET", "AUTH_JWT_SECRET"),
+		"JWT secret shared with analysis (empty = write endpoints answer 503 auth_unavailable, read endpoints stay public)")
+	allowInsecure := flag.Bool("allow-insecure", envBoolDefault("AUTH_INSECURE", true),
+		"allow starting without JWT_SECRET on loopback or an explicit loopback-published bind")
 	exposure := flag.String("insecure-exposure", os.Getenv("AUTH_INSECURE_EXPOSURE"),
-		"explicit exposure declaration for open access on a non-loopback bind (only loopback-published is accepted)")
+		"explicit exposure declaration that opens write endpoints without a secret (only loopback-published is accepted)")
 	flag.Parse()
 
-	// 启动闸（裁-15）：有 secret ⇒ 鉴权；无 secret + 回环 ⇒ 开放；无 secret + 非回环 ⇒ 拒绝启动。
-	startup := kithttp.DecideStartup(*jwtSecret, true, bindHost(*addr), *exposure)
+	// 启动闸（裁-15 + 三态口径）：
+	//   1. 有 secret ⇒ 按 policy 表全闸；
+	//   2. 无 secret + 回环（未显式声明）⇒ 进程能起，写端点 503 auth_unavailable，读端点公开；
+	//   3. 无 secret + 显式 loopback-published ⇒ 写端点放开（启动 WARN 点名「写面无鉴权」）。
+	// 无 secret + 非回环 + 无显式声明 ⇒ 拒绝启动；不允许「默认全开」。
+	startup := kithttp.DecideStartup(*jwtSecret, *allowInsecure, bindHost(*addr), *exposure)
 	if startup.Refuse {
 		log.Fatalf("riskservice: %s", startup.Reason)
 	}
-	if startup.Insecure {
-		log.Printf("riskservice: WARNING authentication disabled (open access); bind address %q is loopback-only", *addr)
+	openAccess := openAccessEnabled(startup, *exposure)
+	switch {
+	case openAccess && isLoopbackBind(*addr):
+		log.Printf("riskservice: WARNING 写面无鉴权（authentication disabled via AUTH_INSECURE_EXPOSURE=%s）："+
+			"write endpoints accept unauthenticated requests; bind address %q is loopback-only",
+			kithttp.InsecureExposureLoopbackPublished, *addr)
+	case openAccess:
+		log.Printf("riskservice: WARNING 写面无鉴权 且已对外暴露（authentication disabled via AUTH_INSECURE_EXPOSURE=%s）："+
+			"write endpoints accept unauthenticated requests; bind address %q is non-loopback and 已对外暴露",
+			kithttp.InsecureExposureLoopbackPublished, *addr)
+	case startup.Insecure:
+		log.Printf("riskservice: WARNING authentication is not configured: "+
+			"write endpoints answer 503 auth_unavailable, read endpoints stay public; "+
+			"bind address %q is loopback-only", *addr)
 	}
 
 	stores, closeStores, err := openStores(*dsn)
@@ -78,6 +97,12 @@ func main() {
 		log.Fatalf("riskservice: %v", err)
 	}
 	tokens := auth.NewTokenService(auth.Config{JWTSecret: startup.Secret})
+	// 三态装配：第 3 态（显式 loopback-published）用开放闸；第 1/2 态都走 kit 闸
+	// （有 secret ⇒ 全闸；无 secret ⇒ 写端点 503、读端点公开）。
+	authorizer := httpapi.NewAuthorizer(tokens)
+	if openAccess {
+		authorizer = httpapi.NewOpenAccessAuthorizer()
+	}
 	// G4：monitor 的 `configured` 判别位是部署声明，不是探测——本仓看不见 core 的
 	// `risk_service.events_enabled`。默认 false 与 core 出厂值对齐；声明与 core
 	// 实际开关不一致属于部署错误，核对见 docs/runbook.md §5。
@@ -87,7 +112,7 @@ func main() {
 		Handler: httpapi.New(svc,
 			httpapi.WithEvents(events),
 			httpapi.WithBreakers(breakers),
-			httpapi.WithAuthorizer(httpapi.NewAuthorizer(tokens)),
+			httpapi.WithAuthorizer(authorizer),
 			httpapi.WithReadiness(stores.ready),
 			httpapi.WithEventIngestConfigured(eventsExpected),
 		).Handler(),
@@ -103,7 +128,7 @@ func main() {
 	signal.Notify(stop, syscall.SIGTERM, os.Interrupt)
 	defer signal.Stop(stop)
 
-	log.Printf("riskservice: listening on %s (auth=%t)", ln.Addr(), tokens.Enabled())
+	log.Printf("riskservice: listening on %s (auth=%t, open-access=%t)", ln.Addr(), tokens.Enabled(), openAccess)
 	if err := serve(srv, ln, stop); err != nil {
 		log.Fatalf("riskservice: %v", err)
 	}
@@ -174,6 +199,38 @@ func envFirst(names ...string) string {
 		}
 	}
 	return ""
+}
+
+// isLoopbackBind 判定监听地址是否只在本机回环（供第 3 态 WARN 措辞区分
+// 「仅回环」与「已对外暴露」）。空主机（:8089 / 0.0.0.0）都算非回环。
+func isLoopbackBind(addr string) bool {
+	host := bindHost(addr)
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// openAccessEnabled 只在启动闸已允许「无 secret 启动」、且显式声明了
+// loopback-published 时才返回 true（第 3 态）。逐字匹配，不做大小写/别名宽容：
+// 拼错就是拼错，宁可拒绝启动也不猜运维意图。
+func openAccessEnabled(startup kithttp.Startup, exposure string) bool {
+	return startup.Insecure && strings.TrimSpace(exposure) == kithttp.InsecureExposureLoopbackPublished
+}
+
+// envBoolDefault 读布尔开关；缺省用 def，非法值告警后仍用 def（不猜）。
+func envBoolDefault(name string, def bool) bool {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		log.Printf("riskservice: ignoring invalid %s=%q (want true/false)", name, raw)
+		return def
+	}
+	return v
 }
 
 // envBool 读布尔开关；缺省与非法值一律 false（非法值告警，不猜）。

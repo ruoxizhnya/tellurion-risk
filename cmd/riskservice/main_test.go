@@ -4,12 +4,78 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	kithttp "github.com/ruoxizhnya/tellurion-kit/auth/httpadapter"
+
+	"tellurion-risk/internal/httpapi"
+	"tellurion-risk/internal/rule"
 )
+
+// TestExplicitExposureAllowsNonLoopbackBind 钉住第 3 态的绑定口径：容器内一律绑
+// 0.0.0.0，显式声明 loopback-published 后**不因非回环拒绝启动**，且写面走业务
+// （POST /api/risk/rules = 201，不是 503）。
+func TestExplicitExposureAllowsNonLoopbackBind(t *testing.T) {
+	startup := kithttp.DecideStartup("", true, "0.0.0.0", "loopback-published")
+	if startup.Refuse {
+		t.Fatalf("explicit exposure must allow non-loopback bind, refused: %s", startup.Reason)
+	}
+	if !openAccessEnabled(startup, "loopback-published") {
+		t.Fatal("explicit exposure must enable open access")
+	}
+
+	svc, err := rule.New(rule.Options{Store: rule.NewMemory()})
+	if err != nil {
+		t.Fatalf("rule.New: %v", err)
+	}
+	srv := httptest.NewServer(httpapi.New(svc,
+		httpapi.WithAuthorizer(httpapi.NewOpenAccessAuthorizer())).Handler())
+	defer srv.Close()
+
+	const body = `{"rule_id":"r-nonloop","scope":"strategy","type":"stop_loss","params":` +
+		`{"atr_period":14,"base_multiplier":2.5,"bear_multiplier":3.5,"bull_multiplier":2.0,"sideways_multiplier":2.5}}`
+	resp, err := http.Post(srv.URL+"/api/risk/rules", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /api/risk/rules: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("non-loopback open access create = %d, want 201: %s", resp.StatusCode, raw)
+	}
+}
+
+// TestOpenAccessRequiresExplicitExposure 钉住第 3 态的判定：只有启动闸已允许
+// 「无 secret 启动」**且**逐字声明 loopback-published 才放开写面。缺声明 = 第 2 态
+// （写端点 503），拼错/大小写不同也不猜。
+func TestOpenAccessRequiresExplicitExposure(t *testing.T) {
+	insecure := kithttp.Startup{Insecure: true}
+	cases := []struct {
+		name     string
+		startup  kithttp.Startup
+		exposure string
+		want     bool
+	}{
+		{"no declaration is state 2", insecure, "", false},
+		{"misspelled declaration refuses to guess", insecure, "loopback", false},
+		{"uppercase is not accepted", insecure, "LOOPBACK-PUBLISHED", false},
+		{"explicit declaration is state 3", insecure, " loopback-published ", true},
+		{"secret present never opens", kithttp.Startup{Secret: []byte("s")}, "loopback-published", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := openAccessEnabled(tc.startup, tc.exposure); got != tc.want {
+				t.Fatalf("openAccessEnabled(%+v, %q) = %t, want %t", tc.startup, tc.exposure, got, tc.want)
+			}
+		})
+	}
+}
 
 // TestDefaultAddr 钉住 ADR-036 G0 的默认监听端口。
 //

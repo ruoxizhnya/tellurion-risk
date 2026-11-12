@@ -9,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ruoxizhnya/tellurion-kit/auth"
-
 	"tellurion-risk/internal/event"
 	"tellurion-risk/internal/rule"
 )
@@ -62,8 +60,10 @@ func TestEvents_RECORDActorFromClaimsNotBody(t *testing.T) {
 			want: "alice",
 		},
 		{
-			name:       "open-access",
-			authorizer: NewAuthorizer(auth.NewTokenService(auth.Config{})),
+			name: "open-access",
+			// 第 3 态的显式替身：open-access 语义只能由「无 secret + 显式
+			// loopback-published」装配，不能用「没配 secret」隐式得到。
+			authorizer: NewOpenAccessAuthorizer(),
 			want:       ActorOpenAccess,
 		},
 	}

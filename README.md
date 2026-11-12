@@ -28,9 +28,17 @@ go vet ./...
 go test ./...
 ```
 
-起服务（单仓，默认 `127.0.0.1:8089`）：
+起服务（单仓，默认 `127.0.0.1:8089`）。**裸本地联调必须有 secret，或显式声明第 3 态**，
+否则写端点会按第 2 态返回 `503 auth_unavailable`（这是 2026-11-12 起的有意行为）：
 
 ```bash
+# 第 1 态（推荐）：有 secret ⇒ 全闸
+JWT_SECRET='<与 core 共享的 secret>' go run ./cmd/riskservice -addr 127.0.0.1:8089
+
+# 第 3 态（仅本地/排障）：无 secret + 显式声明回环发布 ⇒ 写面开放 + 启动 WARN
+AUTH_INSECURE_EXPOSURE=loopback-published go run ./cmd/riskservice -addr 127.0.0.1:8089
+
+# 第 2 态（默认，无 secret 也无声明）：进程能起，读端点公开，写端点一律 503
 go run ./cmd/riskservice -addr 127.0.0.1:8089
 ```
 
@@ -44,8 +52,9 @@ docker compose -f deploy/compose.yaml up --build
 | 环境变量 | 作用 | 缺省 |
 |---|---|---|
 | `RISK_DATABASE_URL` | PostgreSQL DSN；空 = 进程内 Memory（重启即丢，仅本地开发） | 空 |
-| `JWT_SECRET` / `AUTH_JWT_SECRET` | 鉴权 secret；空 + 回环 = 开放，空 + 非回环 = **拒绝启动** | 空 |
-| `AUTH_INSECURE_EXPOSURE` | 非回环绑定时的显式开放声明（只接受回环发布） | 空 |
+| `JWT_SECRET` / `AUTH_JWT_SECRET` | 鉴权 secret。有 = 第 1 态（全闸）；空 = 第 2 态（写端点 503，读公开）或第 3 态（见下一行） | 空 |
+| `AUTH_INSECURE_EXPOSURE` | 显式开放声明；只接受 `loopback-published`（无 secret 时第 3 态：写面开放 + 启动 WARN 点名） | 空 |
+| `AUTH_INSECURE` | 是否允许「无 secret 启动」；`false` + 无 secret = 一律拒绝启动 | `true` |
 | `RISK_EVENTS_EXPECTED` | 部署是否声明已接入事件回传（`monitor/*` 的 `configured` 判别位） | `false` |
 
 健康检查用 **HTTP 探针**：`GET /healthz`（进程存活）/ `GET /readyz`（PG 可连 + 迁移已执行；内存档标 `store:"memory"`），两条公开、不鉴权、不限流（G1，2026-11-07）。
@@ -53,7 +62,15 @@ docker compose -f deploy/compose.yaml up --build
 `POST /api/risk/rules` → `PUT /api/risk/rules/{id}` → `POST /api/risk/rules/{id}/approve` → `GET /api/risk/rules?scope=&active=`。
 
 所有端点都必须过鉴权闸；`Authorizer` 未装配时一律 `503 auth_unavailable`（fail-closed，不是匿名可读）。
-有 `JWT_SECRET` 时启用鉴权（读 viewer / 写 trader / 审批 admin）；无 secret + 回环 = 开放，无 secret + 非回环 = **拒绝启动**。
+鉴权三态（六仓统一口径，2026-11-12）：
+
+| 态 | 条件 | 行为 |
+|---|---|---|
+| 1 | 有 `JWT_SECRET` | 全闸：读 viewer / 写 trader / 审批 admin；服务间 `service` 只开 resolve + events |
+| 2 | 无 secret + 回环 + **无显式声明** | 进程能起；**写端点一律 `503 auth_unavailable`**，读端点公开 |
+| 3 | 无 secret + 显式 `AUTH_INSECURE_EXPOSURE=loopback-published` | 写面开放（**任意绑定**都允许起）；启动 WARN 写出「写面无鉴权」+ 绑定地址，非回环额外标「已对外暴露」 |
+
+「没配 secret」**不再**等于「已通过」——第 2 态就是为此存在的。
 服务间调用（core 代机器）用 `service` 角色，只开 `POST /api/risk/resolve` 与 `POST /api/risk/events` 两条（ADR-0006）。
 
 本仓**单独 checkout 就能跑通**上面三条。需要别的仓源码才过 → 边界错了，不是加 `replace` 能解决的问题。

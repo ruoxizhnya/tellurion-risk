@@ -18,11 +18,16 @@ verified-by: SVC-RISK-G4 / SVC-RISK-G2 —— 起停 / 探针 / 审计读 / 空�
 
 ```bash
 go build -o /tmp/riskservice ./cmd/riskservice
-/tmp/riskservice -addr 127.0.0.1:8089
+# 裸本地联调：无 secret 时必须显式声明第 3 态，否则写端点 503 auth_unavailable
+AUTH_INSECURE_EXPOSURE=loopback-published /tmp/riskservice -addr 127.0.0.1:8089
 # 另一个终端：
 curl -sS http://127.0.0.1:8089/healthz   # {"status":"ok"}
 curl -sS http://127.0.0.1:8089/readyz    # {"status":"ready"}
 ```
+
+> 只起进程、不声明 `AUTH_INSECURE_EXPOSURE`：进程照样能起（第 2 态），但
+> `POST/PUT /api/risk/*` 一律 `503 auth_unavailable`，只有读端点和
+> `POST /api/risk/monitor/evaluate` 公开。这是 2026-11-12 起的有意行为。
 
 ### 1.2 PG 档
 
@@ -36,7 +41,23 @@ export JWT_SECRET='<与 core 共享的 secret>'   # 不设 + 非回环 = 启动�
   进程 `log.Fatalf` 退出（非零），不会带着空 store 起。
 - 非回环绑定必须给 `JWT_SECRET`；`-insecure-exposure` 只在显式本地开发时使用，且只接受 loopback。
 
-### 1.3 Docker Compose
+### 1.3 鉴权三态（2026-11-12 起；六仓统一口径）
+
+| 态 | 启动条件 | 写端点 | 读端点 | 启动日志 |
+|---|---|---|---|---|
+| 1 | `JWT_SECRET` 非空 | 需 `trader` / `admin`（`service` 只开 resolve / events） | 需 `viewer` | `auth=true, open-access=false` |
+| 2 | 无 secret + 回环 + 无声明 | **一律 `503 auth_unavailable`** | 公开 | WARN：`authentication is not configured` |
+| 3 | 无 secret + `AUTH_INSECURE_EXPOSURE=loopback-published`（任意绑定） | 放开（无鉴权） | 公开 | WARN：`写面无鉴权` + 绑定地址；非回环额外标 `已对外暴露` |
+
+- 无 secret + 非回环 + 无声明 ⇒ **拒绝启动**（`log.Fatalf`，非零退出）。
+- 第 3 态**不因绑定地址拒绝启动**：容器内一律绑 `0.0.0.0`，显式声明就是「我知道它在对外，
+  且接受写面无鉴权」；绑定非回环时 WARN 必须出现「已对外暴露」。
+- `AUTH_INSECURE=false` + 无 secret ⇒ 无论绑定地址一律拒绝启动（用于关闭第 2/3 态）。
+- 第 2 态的存在是为了让「忘了配 secret」只降级写面，而不是把写面敞开。
+- core 装配期会 `POST /api/risk/resolve`（写口径）：本地双进程联调时 risk 必须处于第 1 态
+  （推荐）或显式第 3 态，否则 core 会因 503 拒绝启动（错误文案会给出两条出路）。
+
+### 1.4 Docker Compose
 
 ```bash
 docker compose -f deploy/compose.yaml up --build

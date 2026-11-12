@@ -21,7 +21,10 @@ verified-by: 2026-11-11 文档对齐审计 —— `SVC-CORE-RISK-RETIRE`（2026-
 > **鉴权（2026-10-25，裁-15 + ADR-0005）**：机制在 kit `auth/httpadapter`（Bearer → `Parse` →
 > `kind=access` → 角色 any-of），策略表在本仓 `internal/httpapi/policy.go`；**所有端点**都过闸，
 > 未装配 `Authorizer` → **503 `auth_unavailable`**（拒绝而非放行）。读端点 viewer、写端点 trader、
-> 规则发布 / 审批 admin。无 secret + 回环 = 开放；无 secret + 非回环 = **拒绝启动**。
+> 规则发布 / 审批 admin。**鉴权三态（2026-11-12，六仓统一口径）**：有 `JWT_SECRET` = 第 1 态（全闸）；
+> 无 secret + 回环 + 无显式声明 = 第 2 态（进程能起，**写端点一律 503 `auth_unavailable`**，读端点公开）；
+> 无 secret + 显式 `AUTH_INSECURE_EXPOSURE=loopback-published` = 第 3 态（写面开放 + 启动 WARN 点名）；
+> 无 secret + 非回环 + 无声明 = **拒绝启动**。「没配 secret」不等于「已通过」。
 > 审计 `actor` 从 claims 填（open-access 记 `open-access`），不再有空串。
 > **服务间档 `service`（2026-10-25，裁-17 + ADR-0006）**：`service` 是**服务间**角色（core 代机器调用），
 > 与人角色正交、不是「比 admin 低一档」；只开 `POST /api/risk/resolve` 与 `POST /api/risk/events`
@@ -79,7 +82,7 @@ verified-by: 2026-11-11 文档对齐审计 —— `SVC-CORE-RISK-RETIRE`（2026-
 | `no_approved_rules` | 404 | `rule.ErrNoApprovedRules` |
 | `internal` | 500 | `rule.ErrSnapshotMismatch` 及其余未识别错误（内容寻址被破坏是服务端事故，细节不外吐） |
 | `unauthenticated` / `forbidden` | 401 / 403 | 鉴权闸（非领域错误） |
-| `auth_unavailable` | 503 | 未装配 `Authorizer`（fail-closed） |
+| `auth_unavailable` | 503 | 未装配 `Authorizer`；或无 secret 且未显式声明开放（第 2 态）——**写端点**一律此码，读端点不受影响（fail-closed） |
 | `rate_limited` | 429 | 限流（非领域错误） |
 
 **幂等语义（写死，各有用例）**：
@@ -193,7 +196,8 @@ verified-by: 2026-11-11 文档对齐审计 —— `SVC-CORE-RISK-RETIRE`（2026-
 > **时间窗**：`from` / `to` 为 RFC3339，按事件的 `ts` 闭区间过滤；`to` 缺省 = 当前时间，
 > `from` 缺省 = `to - 24h`；`from >= to` 或跨度 > 7 天 → `400 invalid_params`。
 > **鉴权**：三端点都必须过鉴权闸；闸未装配 → `503 auth_unavailable`，无凭证 → `401 unauthenticated`，
-> 角色不足 → `403 forbidden`。**拒绝，不是放行**。
+> 角色不足 → `403 forbidden`。**拒绝，不是放行**。第 2 态（无 secret 且未显式声明）读写口径不同：
+> `exposure` / `alerts` 是 GET，保持公开；`evaluate` 是唯一只读 POST，也按读口径公开；其余写端点 503。
 
 **`GET /api/risk/monitor/exposure`**
 
@@ -331,6 +335,7 @@ verified-by: 2026-11-11 文档对齐审计 —— `SVC-CORE-RISK-RETIRE`（2026-
 | 无凭证 / token 过期 | 401 `unauthenticated` — **✅ 全部端点**（2026-10-25） | 不重试，补齐凭证 |
 | 角色不足（读需 viewer / 写需 trader / 审批需 admin；`resolve` / `events` 另开 service） | 403 `forbidden` — **✅ 全部端点**（2026-10-25） | 不重试 |
 | 鉴权闸未装配 | 503 `auth_unavailable` — ✅ 全部端点（**拒绝而非放行**） | 不重试；等待运维装配 Authorizer |
+| 未配置鉴权（第 2 态：无 secret 且未声明 `loopback-published`） | **写端点** 503 `auth_unavailable` — ✅ 全部写口径；读端点保持 2xx | 配 `JWT_SECRET`，或让 risk 显式声明 `AUTH_INSECURE_EXPOSURE=loopback-published` |
 | 监控读取端口未装配 | 503 `dependency_unavailable` — ✅ | 不重试；服务端装配问题 |
 | 运行期 PostgreSQL 不可达（读 / 写 / 聚合） | 503 `dependency_unavailable`（不吐原文）；启动期则进程不监听、`/readyz` 503 | 按**服务不可用**处理：查 `/readyz`；只对幂等请求重试；PG 恢复后同进程自愈（连接池换连）；`resolve` 腿失败 ⇒ run 拒绝启动 |
 | 规则库为空（`GET /rules`） | 200 `{"rules":[],"count":0}`（**不是错误**，也**不是** `null`） | 先建规则并审批；空库**不许**用默认限额开跑 |

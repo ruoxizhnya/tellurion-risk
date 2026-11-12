@@ -115,6 +115,9 @@ run 后逐笔裁决事件回传、`POST /events` 的审计留痕（`risk_events.
    `auth/httpadapter` 验 `Bearer` access token（拒 refresh / 坏签名 / 过期）→ 401，角色不在策略表 → 403；
    通过后把 `Principal` 放进 context，审计 `actor` 从这里取（open-access 记 `open-access`）。
    策略表（读 viewer / 写 trader / 审批 admin）与路由表由守卫测试双向对拍。
+   **三态（2026-11-12）**：无 secret + 回环 + 无声明 ⇒ 第 2 态，读端点公开、写端点一律
+   `503 auth_unavailable`（`ErrAuthUnavailable`，fail-closed）；无 secret + 显式
+   `AUTH_INSECURE_EXPOSURE=loopback-published` ⇒ 第 3 态，写面开放（审计 `actor=open-access`）。
    **服务间档（裁-17 + ADR-0006）**：`POST /api/risk/resolve` 与 `POST /api/risk/events` 两条
    core 代机器发起的链路额外接受 `service` 角色（与 `trader` / `admin` 并列；kit 角色 any-of
    且不排序 ⇒ 不能互相顶替）。`GET /api/risk/audit` 与规则管理面**不接** `service`——

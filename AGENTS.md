@@ -14,6 +14,15 @@
 审计读 `GET /api/risk/audit`；`actor` 取自鉴权 claims（open-access 记 `open-access`），不再有空串；鉴权实现见 ADR-0005。
 服务间角色 `service`（裁-17）只开 `POST /api/risk/resolve` 与 `POST /api/risk/events` 两条——core 代机器调本仓走它；`/audit` 与规则管理面**不开**（ADR-0006）。
 
+**鉴权三态（2026-11-12；六仓统一口径）**：`JWT_SECRET` 非空 = 第 1 态（按 policy 表全闸）；
+无 secret + 回环 + 无显式声明 = 第 2 态（进程能起，**写端点一律 503 `auth_unavailable`**，读端点公开）；
+无 secret + 显式 `AUTH_INSECURE_EXPOSURE=loopback-published` = 第 3 态（**任意绑定**都可起、写面开放，
+启动 WARN 写出「写面无鉴权」+ 绑定地址，非回环标「已对外暴露」）；
+无 secret + 非回环 + 无声明 = 拒绝启动。**「没配 secret」不等于「已通过」**——第 2 态就是这个判据，
+实现见 `internal/httpapi/auth.go`（`ErrAuthUnavailable` / `NewOpenAccessAuthorizer`）与
+`cmd/riskservice/main.go`（`openAccessEnabled`）；`-allow-insecure` / `AUTH_INSECURE` 缺省 true，
+置 false 即关闭第 2/3 态。core 装配期 `POST /api/risk/resolve` 属写口径，本地裸启动必须显式第 3 态或配 secret。
+
 **本仓今天的实现**（`internal/rule` / `internal/event` / `internal/breaker` / `internal/pgstore` /
 `internal/httpapi` / `cmd/riskservice`）：规则 4 端点 + 快照 3 端点 + 审计 1 端点 + 事件 1 端点 + 熔断 1 端点 +
 监控 3 端点 + 审批状态机 + 内容寻址 `version_hash` / `risk_rules_hash` + 审计 +
