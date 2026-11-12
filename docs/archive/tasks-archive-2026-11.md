@@ -22,6 +22,7 @@
 | RISK-TEST-DSN-UNIFY | 测试 DSN 两个 env 名并存且均未登记 | 2026-11-12 | `27a3e48` | [原文](#RISK-TEST-DSN-UNIFY) |
 | RISK-GOMOD-DIRECT | contracts 被直接 import 却标 `// indirect` | 2026-11-12 | `4a14b9c` | [原文](#RISK-GOMOD-DIRECT) |
 | RISK-RULE-SEED | 出厂规则集 seed 缺失 | 2026-11-12 | `feat(risk): RISK-RULE-SEED 出厂规则集 seed` | [原文](#RISK-RULE-SEED) |
+| RISK-CREDENTIAL-PATH | 带凭证路径未取证（`RISK_SERVICE_RESOLVE_TOKEN`） | 2026-11-12 | `a916a51`（core 侧证据） | [原文](#RISK-CREDENTIAL-PATH) |
 | X-DEP-BUMP-CONSUMERS | 消费方依赖抬升（kit v0.5.0 / go 1.26.11）+ govulncheck 门 | 2026-11-12 | `c19634a`（pin）、回补见本条 | [施工记录](#X-DEP-BUMP-CONSUMERS) |
 | X-AGENTS-DEPENDENCY-TABLE | 依赖表按 go.mod 实测对齐 | 2026-11-12 | `74cfbf5` | [施工记录](#X-AGENTS-DEPENDENCY-TABLE) |
 | X-CI-RACE-STATICCHECK | CI 增加 `-race` 与 `staticcheck` | 2026-11-12 | `147eb56` | [施工记录](#X-CI-RACE-STATICCHECK) |
@@ -1042,3 +1043,23 @@
 >   **core full profile 腿未复跑**，原因：本轮主任限制只碰 risk/agent/docs 三仓，core 与 compose 栈归其他会话
 >   （禁止进入其目录或干扰在跑的部署）。重开条件：在干净的 full profile 窗口按 `tellurion:CORE-COMPOSE-UNIFY`
 >   复跑并贴 resolve 输出。该条与 `RISK-CONTRACTS-SNAPSHOT-MIGRATION` 的「未执行 hash 基线腿」共用同一补跑窗口。
+
+## 六、RISK-CREDENTIAL-PATH（2026-11-12）
+
+> 以下为 2026-11-12 已收口（✅）任务的原文，自 `docs/TASKS.md` 逐字移入，未改写。
+
+<a id="RISK-CREDENTIAL-PATH"></a>
+### RISK-CREDENTIAL-PATH · 带凭证路径未取证（`RISK_SERVICE_RESOLVE_TOKEN`）[P1] ✅（2026-11-12）
+
+> **收口记录（2026-11-12，挂起任务处置批次，主任指令）**：与 `tellurion:CORE-RISK-CREDENTIAL-PATH`
+> 同一证据批次真跑取证完成——带真 `JWT_SECRET` + `RISK_SERVICE_RESOLVE_TOKEN` 起 full profile，
+> resolve 走通，三条状态码实测为 **200 / 401 / 403**（无凭证 401、凭证有效但角色不足 403）。
+> 证据原文（命令、状态码、日志）落 core 侧归档施工记录（commit `a916a51`），本仓只留指针；
+> 本仓校验侧零代码改动（策略表 `service` 角色本就只开 resolve / events 两条）。
+
+- **① 目标**：本仓在**非回环、带 token** 的形态下真被 core 调通过一次。
+- **② 上下文**：`ADR-0005` / `ADR-0006` 已把鉴权与两条服务间链路写死，`QT-77` 的端到端只跑过「回环开放 / 空 token」；`RISK_SERVICE_RESOLVE_TOKEN` 同时非空的生产形态**从未真跑**。core 侧同一缺口登记为 `tellurion:CORE-RISK-CREDENTIAL-PATH`。
+- **③ 要求**：① 真 token 起本仓 + core，跑 resolve 200；② 错 token / 缺 token 各跑一次 401；③ 记录真实命令、状态码与日志原文。
+- **④ 约束与非目标**：不改策略表与鉴权实现；token 只走环境变量。
+- **⑤ 验收**：三条状态码（200 / 401 / 403）；破坏验证 = 换错 token ⇒ 401。
+- **⑥ 边界**：本仓校验侧；core 侧装配归 `tellurion`。

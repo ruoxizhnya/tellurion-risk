@@ -26,21 +26,6 @@ completed-2026-11-11: `RISK-CONTRACTS-SNAPSHOT-MIGRATION` ✅（快照形状 / �
 - **⑥ 边界**：接收面归本仓；投递面归 `tellurion`（`cmd/analysis/wiring/risk_events.go`）。
 - **重开条件**：事件回传从「默认关」转为任一部署默认开。
 
-### RISK-CREDENTIAL-PATH · 带凭证路径未取证（`RISK_SERVICE_RESOLVE_TOKEN`）[P1] ✅（2026-11-12）
-
-> **收口记录（2026-11-12，挂起任务处置批次，主任指令）**：与 `tellurion:CORE-RISK-CREDENTIAL-PATH`
-> 同一证据批次真跑取证完成——带真 `JWT_SECRET` + `RISK_SERVICE_RESOLVE_TOKEN` 起 full profile，
-> resolve 走通，三条状态码实测为 **200 / 401 / 403**（无凭证 401、凭证有效但角色不足 403）。
-> 证据原文（命令、状态码、日志）落 core 侧归档施工记录（commit `a916a51`），本仓只留指针；
-> 本仓校验侧零代码改动（策略表 `service` 角色本就只开 resolve / events 两条）。
-
-- **① 目标**：本仓在**非回环、带 token** 的形态下真被 core 调通过一次。
-- **② 上下文**：`ADR-0005` / `ADR-0006` 已把鉴权与两条服务间链路写死，`QT-77` 的端到端只跑过「回环开放 / 空 token」；`RISK_SERVICE_RESOLVE_TOKEN` 同时非空的生产形态**从未真跑**。core 侧同一缺口登记为 `tellurion:CORE-RISK-CREDENTIAL-PATH`。
-- **③ 要求**：① 真 token 起本仓 + core，跑 resolve 200；② 错 token / 缺 token 各跑一次 401；③ 记录真实命令、状态码与日志原文。
-- **④ 约束与非目标**：不改策略表与鉴权实现；token 只走环境变量。
-- **⑤ 验收**：三条状态码（200 / 401 / 403）；破坏验证 = 换错 token ⇒ 401。
-- **⑥ 边界**：本仓校验侧；core 侧装配归 `tellurion`。
-
 ## 二、跨仓指针（不在本仓，勿双写）
 
 | 事项 | 去哪 |
