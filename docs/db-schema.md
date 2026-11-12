@@ -124,6 +124,15 @@ verified-by: 2026-11-11 文档对齐审计 —— 限额双 owner 已收口（`S
 - **熔断载荷身份不含 `ts`（2026-10-24，X3d）**：`breaker_id` 是幂等键，载荷身份 = `action + scope + reason`。
   `command_ts` 是投递时间，重试可重新生成；把它算进载荷身份会让正常重试变成 409。
   同键不同 `action/scope/reason` → 409（不许静默成功）。
+- **出厂规则集 seed（2026-11-12，RISK-RULE-SEED）**：`cmd/riskservice` 在迁移之后、开始监听之前调
+  `Service.SeedFactory` 灌入 4 条 `global` 规则（`global-position-sizing-v1` / `global-regime-v1` /
+  `global-stop-loss-v1` / `global-take-profit-v1`）。语义：**只对不存在的 `rule_id` 写入**；已存在（含人工修改）
+  一律跳过，绝不 update。每条规则在单个 `Store.Tx` 内走与手工相同的 `create → approve` 状态机，终态 `active`；
+  失败则拒绝启动（fail-closed）。seed 的审计 `actor` 固定为常量 `factory-seed`，人工操作取 claims 身份 /
+  `open-access`，库里据此区分：`SELECT DISTINCT rule_id FROM risk.audit_logs WHERE action='create' AND actor='factory-seed'`。
+  参数值 2026-11-12 从部署库 1:1 捕获（工程默认，不是投资建议）；空库 seed 后的 `risk_rules_hash`
+  固定向量 = `84a95d7d…`（见 `docs/TASKS.md` 归档 `RISK-RULE-SEED`）。被删除的 seed 规则下次启动补回，
+  其余规则不动。**不改表结构**。
 
 ## 6. 待定
 

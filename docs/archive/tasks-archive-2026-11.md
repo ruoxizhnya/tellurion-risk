@@ -1,6 +1,6 @@
 # TASKS 归档 — tellurion-risk（2026-11）
 
-> **本文件是 `docs/TASKS.md` 的历史归档，进 git、不删除**。归档时间 2026-11-11；收录范围 = 截至 2026-11-10 已收口（✅）的任务原文与当时的施工记录，**逐字搬入、未改写**（原文件 frontmatter 留在新台账；任务标题与正文原样保留）。2026-11-12 追加收录 W7 四单（`RISK-GRACEFUL-SHUTDOWN` / `RISK-PGDOWN-503` / `RISK-TEST-DSN-UNIFY` / `RISK-GOMOD-DIRECT`），原文同样逐字搬入，见 §三；同日另追加 Wave 2 三项跨仓 X 伞的**本仓施工记录**（按台账口径不为 X 伞新开六字段任务单），见 §四。
+> **本文件是 `docs/TASKS.md` 的历史归档，进 git、不删除**。归档时间 2026-11-11；收录范围 = 截至 2026-11-10 已收口（✅）的任务原文与当时的施工记录，**逐字搬入、未改写**（原文件 frontmatter 留在新台账；任务标题与正文原样保留）。2026-11-12 追加收录 W7 四单（`RISK-GRACEFUL-SHUTDOWN` / `RISK-PGDOWN-503` / `RISK-TEST-DSN-UNIFY` / `RISK-GOMOD-DIRECT`），原文同样逐字搬入，见 §三；同日另追加 Wave 2 三项跨仓 X 伞的**本仓施工记录**（按台账口径不为 X 伞新开六字段任务单），见 §四；同日再追加 `RISK-RULE-SEED`，见 §五。
 
 > **检索方式**：按任务 ID `grep -n "<ID>" docs/archive/tasks-archive-2026-11.md`；按 commit `grep -n "<sha>" docs/archive/tasks-archive-2026-11.md`；索引表在本节下方，含 ID / 标题 / 收口日期 / commit / 证据链接。
 
@@ -21,6 +21,7 @@
 | RISK-PGDOWN-503 | PG 不可达 default 分支回 500 而非 503（D5=a） | 2026-11-12 | `d94358e` | [原文](#RISK-PGDOWN-503) |
 | RISK-TEST-DSN-UNIFY | 测试 DSN 两个 env 名并存且均未登记 | 2026-11-12 | `27a3e48` | [原文](#RISK-TEST-DSN-UNIFY) |
 | RISK-GOMOD-DIRECT | contracts 被直接 import 却标 `// indirect` | 2026-11-12 | `4a14b9c` | [原文](#RISK-GOMOD-DIRECT) |
+| RISK-RULE-SEED | 出厂规则集 seed 缺失 | 2026-11-12 | `feat(risk): RISK-RULE-SEED 出厂规则集 seed` | [原文](#RISK-RULE-SEED) |
 | X-DEP-BUMP-CONSUMERS | 消费方依赖抬升（kit v0.5.0 / go 1.26.11）+ govulncheck 门 | 2026-11-12 | `c19634a`（pin）、回补见本条 | [施工记录](#X-DEP-BUMP-CONSUMERS) |
 | X-AGENTS-DEPENDENCY-TABLE | 依赖表按 go.mod 实测对齐 | 2026-11-12 | `74cfbf5` | [施工记录](#X-AGENTS-DEPENDENCY-TABLE) |
 | X-CI-RACE-STATICCHECK | CI 增加 `-race` 与 `staticcheck` | 2026-11-12 | `147eb56` | [施工记录](#X-CI-RACE-STATICCHECK) |
@@ -988,3 +989,56 @@
 > - **`-race` 本地取证**：本机无 gcc 且 `CGO_ENABLED=0`，实跑报 `go: -race requires cgo; enable cgo by setting CGO_ENABLED=1`（EXIT=2），**只能由 CI 首跑验证**；未用本地绿冒充。
 > - **YAML 校验**：PyYAML 解析通过，并断言 `jobs.go.steps` 含 `go-version = 1.26.11`、step 名 `Test（-race）` / `staticcheck`、命令含 `go test -race ./... -count=1` 与 `staticcheck@v0.8.2`。
 > - **门禁**：`gofmt -l .` 无输出；`go build/vet/test ./... -count=1` 全绿。
+
+---
+
+<a id="RISK-RULE-SEED"></a>
+## 五、RISK-RULE-SEED · 出厂规则集 seed 缺失 ✅（2026-11-12）
+
+> 以下六字段为 2026-11-12 重开时的台账原文，逐字保留：
+
+### RISK-RULE-SEED · 出厂规则集 seed 缺失 [P1] ✅
+
+> **重开记录（2026-11-12，挂起任务处置批次，主任指令）**：重开条件「任何一次空库部署验收」已触发——
+> 2026-11-10 系统实例整库重建（`tellurion-data:docs/archive/system-pg-init-2026-11-10.md`），
+> 当时规则靠手写进库。core 出厂 `resolve_enabled=true` + 本仓空集 `ErrNoApprovedRules`
+> （`internal/rule/service.go:397-404`）⇒ **任何全新 full 栈今天起不来**，是已发生的可用性缺口。
+> 本单落地后同时解锁归档 `RISK-CONTRACTS-SNAPSHOT-MIGRATION` 施工记录明言「未执行（如实）」的
+> 真栈 hash 基线腿（补齐条件原文：本单落地后按 full profile 复跑）。
+
+- **① 目标**：新部署的空库启动后即有一套可用的 active 规则，core full profile 能起、resolve 返回非空且 hash 可复现。
+- **② 上下文**：现部署库的 4 条规则是直接写进 PG 的，仓库无 seed 脚本/迁移/启动注入。2026-11-12 实测 `risk.rule_defs`：`global-position-sizing-v1` / `global-regime-v1` / `global-stop-loss-v1` / `global-take-profit-v1`，均 `active` revision 1。resolve 消费 `Filter{Active: true}`（「approved」是 promote 前瞬态，不是 resolve 判据）。
+- **③ 要求**：① seed 内容 = 上述 4 条规则，参数值**施工时从现库捕获、主任审过再入库**（工程默认，不是投资建议）；② 可重放、幂等：同 rule_id 已存在 ⇒ 跳过，**绝不覆盖手改过的规则**；③ seed 走与手写相同的校验/审批状态机（终态 active）；④ hash 固定向量：测试以绝对数值断言 `version_hash` / `risk_rules_hash`；seed 内容与现库一致时，快照 hash 应复现 core `CORE-COMPOSE-UNIFY` 施工记录观测到的 `84a95d7d…` 前缀——不一致则逐项排查 seed 与现库差异，**不许放宽断言**；⑤ 落地后按 full profile 复跑归档 hash 基线腿并记录。
+- **④ 约束与非目标**：不改规则表结构与快照 hash 算法（`contracts/risk` 冻结）；不做规则可视化编辑；不动 core。
+- **⑤ 验收**：空库 → 标准流程起服务 → resolve 200 非空 + hash = 固定向量；重跑 seed 幂等（hash 不变、无重复行）；破坏验证 = 改一条规则参数后重跑 seed ⇒ 参数保留（真做真还原）；归档 hash 腿复跑记录在案。
+- **⑥ 边界**：本仓 seed 机制 + 测试 + 归档补记；core 侧只消费快照（见 `tellurion:CORE-RISK-SNAPSHOT-RELOAD`）。
+
+> **施工记录（2026-11-12，`feat(risk): RISK-RULE-SEED 出厂规则集 seed`）**：
+> - **代码**：`internal/rule/seed.go` 新增 `Service.SeedFactory`。4 条出厂规则参数于 2026-11-12 从部署库
+>   `risk.rule_revisions` 逐字段 1:1 捕获；`FactorySeedActor = "factory-seed"`，`FactorySeedVersion = 1`。
+>   每条规则在**单个 `Store.Tx`** 内走既有 `create → approve` 状态机（同 `Validate` / 参数字典），终态 `active`；
+>   任一失败整条回滚。`rule_id` 已存在（无论 draft/active、是否人工改过）⇒ 跳过，绝不 update；
+>   并发实例同时 seed 时后插入者的唯一键冲突按「已存在」跳过。
+> - **启动接线**：`cmd/riskservice/main.go` 在迁移之后、监听之前调用，30s 超时；失败 `log.Fatalf`（fail-closed）；
+>   日志 `factory seed v1 applied (created=… skipped=…)`。
+> - **seed 与人工规则的库内区分**：审计 `actor = "factory-seed"`（人工为 claims 身份 / `open-access`），
+>   `SELECT DISTINCT rule_id FROM risk.audit_logs WHERE action='create' AND actor='factory-seed'`。不改表结构。
+> - **单元测试**（`internal/rule/seed_test.go`）：空库 seed 前 `ErrNoApprovedRules`、seed 后 4 条 active +
+>   逐条 `version_hash` 绝对断言 + 快照 `84a95d7d…`；重复 seed 幂等（无新增 revision/审计/行）；人工修改后
+>   重跑保留人工版本与人工快照 hash；seed 前同 id 人工 draft 不被覆盖/代审批；白盒删除一条 seed 规则后
+>   只补回该条、其余规则 version_hash 与审计不变。另有 `cmd/riskservice/main_test.go` 走
+>   `openStores → rule.New → SeedFactory → HTTP /api/risk/resolve` 真实装配腿。
+> - **真栈取证（全新空 PG，非系统实例）**：throwaway `postgres:17-alpine` + 本仓真二进制，
+>   首次启动 `created=[4 条]`、HTTP resolve 200、`risk_rules_hash = 84a95d7d…`；重启 `created=[] skipped=[4 条]`，
+>   `rule_defs=4 / rule_revisions=4 / snapshot=1`；人工 PUT+approve 后重启，head/active 仍为 2、参数保留、
+>   hash 保持人工值；删掉 `global-stop-loss-v1` 后重启只补回该条，其余 version_hash 与审计行数不变，hash 回到删除前值。
+> - **破坏验证（真做真还原）**：① 改 `fast_ma_period` 12→99 ⇒ 固定向量用例红（参数校验），还原后绿；
+>   ② 改 `slow_ma_period` 26→30 ⇒ 用例红在 `version_hash` 不匹配，还原后绿；
+>   ③ 把 seed 改成对已存在规则 `update+approve`（朴素覆盖实现）⇒「不覆盖人工改动」用例红，还原后绿。
+>   三次都用 `Copy-Item` 逐字节还原，`seed.go` SHA256 前后一致。
+> - **门禁**：`gofmt -l .` 无输出；`go build ./...`、`go vet ./...`、`go test ./... -count=1` 全绿
+>   （seed 相关用例 `-v` 全 PASS）。
+> - **⑤ 归档 hash 基线腿**：risk 侧已用「全新空库 + 真二进制」复现 `84a95d7d…`（等同基线腿的本仓半边）；
+>   **core full profile 腿未复跑**，原因：本轮主任限制只碰 risk/agent/docs 三仓，core 与 compose 栈归其他会话
+>   （禁止进入其目录或干扰在跑的部署）。重开条件：在干净的 full profile 窗口按 `tellurion:CORE-COMPOSE-UNIFY`
+>   复跑并贴 resolve 输出。该条与 `RISK-CONTRACTS-SNAPSHOT-MIGRATION` 的「未执行 hash 基线腿」共用同一补跑窗口。

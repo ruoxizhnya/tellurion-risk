@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -17,6 +20,58 @@ import (
 	"tellurion-risk/internal/httpapi"
 	"tellurion-risk/internal/rule"
 )
+
+// TestFactorySeed_EmptyStoreBootsResolvable 走真实启动装配（openStores → rule.New →
+// SeedFactory → HTTP resolve）：空库在 seed 前必须 fail-closed，seed 后不手写任何规则
+// 即可 resolve 200，且 hash 复现部署库固定向量 84a95d7d…（RISK-RULE-SEED ⑤）。
+func TestFactorySeed_EmptyStoreBootsResolvable(t *testing.T) {
+	ctx := context.Background()
+	stores, closeStores, err := openStores("")
+	if err != nil {
+		t.Fatalf("openStores: %v", err)
+	}
+	defer closeStores()
+
+	svc, err := rule.New(rule.Options{Store: stores.rules})
+	if err != nil {
+		t.Fatalf("rule.New: %v", err)
+	}
+	if _, err := svc.Resolve(ctx, rule.ResolveRequest{Ruleset: rule.RulesetLatest}); !errors.Is(err, rule.ErrNoApprovedRules) {
+		t.Fatalf("空库 resolve = %v, want ErrNoApprovedRules", err)
+	}
+	report, err := svc.SeedFactory(ctx)
+	if err != nil {
+		t.Fatalf("SeedFactory: %v", err)
+	}
+	if len(report.Created) != 4 {
+		t.Fatalf("seed created = %v, want 4 条出厂规则", report.Created)
+	}
+
+	srv := httptest.NewServer(httpapi.New(svc,
+		httpapi.WithAuthorizer(httpapi.NewOpenAccessAuthorizer())).Handler())
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/risk/resolve", "application/json",
+		strings.NewReader(`{"ruleset":"latest"}`))
+	if err != nil {
+		t.Fatalf("POST /api/risk/resolve: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("resolve = %d, want 200: %s", resp.StatusCode, raw)
+	}
+	var body struct {
+		RiskRulesHash string `json:"risk_rules_hash"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode resolve body: %v", err)
+	}
+	const want = "84a95d7db8e10e6cd4c4324325eed03940f648071e08e1fe0043cd66c6516b2d"
+	if body.RiskRulesHash != want {
+		t.Fatalf("HTTP risk_rules_hash = %s, want %s", body.RiskRulesHash, want)
+	}
+}
 
 // TestExplicitExposureAllowsNonLoopbackBind 钉住第 3 态的绑定口径：容器内一律绑
 // 0.0.0.0，显式声明 loopback-published 后**不因非回环拒绝启动**，且写面走业务

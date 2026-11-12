@@ -82,6 +82,37 @@ curl -sS -m 2 http://127.0.0.1:8089/healthz   # 期望：连接拒绝，curl 退
   本仓不提供「降级空集 / 回落默认限额」。
 - 演练的两条腿与真实退出码见 §7。
 
+### 1.5 出厂规则集 seed（2026-11-12 起）
+
+启动时（迁移之后、开始监听之前）自动灌入 4 条出厂 `global` 规则，空库不再需要手写规则：
+
+```bash
+# 空库首次启动（PG 档）应看到：
+# risk.rule_defs 出现 4 行
+# 日志：factory seed v1 applied (created=[global-position-sizing-v1 global-regime-v1 global-stop-loss-v1 global-take-profit-v1] skipped=[])
+# resolve：{"risk_rules_hash":"84a95d7d...","snapshot":{...}}
+
+# 重复启动（幂等）：
+# 日志：factory seed v1 applied (created=[] skipped=[global-position-sizing-v1 global-regime-v1 global-stop-loss-v1 global-take-profit-v1])
+# 表行数不变（rule_defs=4 / rule_revisions=4），快照 hash 不变
+```
+
+- **只补缺、不覆盖**：`rule_id` 已存在（无论 draft / active、是否人工改过）一律跳过；人工修改后的版本、
+  人工审批状态都保留。删掉某条出厂规则后重启，只会补回这一条，其它规则不动。
+- **区分 seed 与人工规则**：seed 的 `create` / `approve` 审计 `actor` 固定为 `factory-seed`：
+
+```sql
+SELECT DISTINCT rule_id
+  FROM risk.audit_logs
+ WHERE action = 'create' AND actor = 'factory-seed';
+```
+
+  人工操作的 `actor` 来自鉴权 claims（无 secret 回环档为 `open-access`），不会等于该常量；
+  人工改过的规则会追加人工身份的 `update` / `approve` / `deprecate` 行。
+- **fail-closed**：seed 任一规则写入失败 ⇒ 进程非 0 退出，不会带着空规则集服务。
+- 参数是工程默认值（2026-11-12 从部署库 1:1 捕获），**不是投资建议**；改参数走正常
+  `PUT /api/risk/rules/{id}` + `POST .../approve`，不要改代码里的 seed 常量（改常量 = 改历史 hash 基线）。
+
 ## 2. 看审计
 
 ```bash

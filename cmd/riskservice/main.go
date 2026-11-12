@@ -42,6 +42,9 @@ const defaultAddr = "127.0.0.1:8089"
 // 以非 0 退出，不静默把在途请求丢掉。
 const defaultShutdownTimeout = 10 * time.Second
 
+// factorySeedTimeout 是启动时灌出厂规则集的上限；seed 失败即拒绝启动，不带着空规则集服务。
+const factorySeedTimeout = 30 * time.Second
+
 func main() {
 	addr := flag.String("addr", defaultAddr, "listen address")
 	dsn := flag.String("dsn", os.Getenv("RISK_DATABASE_URL"), "PostgreSQL DSN (empty = in-memory store)")
@@ -88,6 +91,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("riskservice: %v", err)
 	}
+	// 出厂规则集：空库启动后必须自带走一套 active 规则，否则 core 的 resolve 腿
+	// 会因 ErrNoApprovedRules 起不来（RISK-RULE-SEED）。seed 幂等（已存在的 rule_id
+	// 一律跳过、绝不覆盖人工改动），失败则拒绝启动（fail-closed）。
+	seedCtx, cancelSeed := context.WithTimeout(context.Background(), factorySeedTimeout)
+	seedReport, err := svc.SeedFactory(seedCtx)
+	cancelSeed()
+	if err != nil {
+		log.Fatalf("riskservice: factory seed: %v", err)
+	}
+	log.Printf("riskservice: factory seed v%d applied (created=%v skipped=%v)",
+		rule.FactorySeedVersion, seedReport.Created, seedReport.Skipped)
 	events, err := event.New(event.Options{Store: stores.events})
 	if err != nil {
 		log.Fatalf("riskservice: %v", err)
