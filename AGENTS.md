@@ -68,13 +68,15 @@ go test ./...
 ```
 
 - 这三条是 R1/R2 的判据：**单独 checkout 就能绿**。
-- **CI 覆盖面**（`.github/workflows/ci.yml`，Go `1.26.11`）：gofmt 未格式化即红 → `go build ./...` → `go vet ./...` → `govulncheck ./...` → `go test ./... -count=1` → `go test -race ./... -count=1` → `staticcheck v0.8.2 ./...`；`-race` 依赖 cgo + gcc（`ubuntu-latest` 自带），本机 Windows 无 gcc，race 腿只能由 CI 验证。
+- **CI 覆盖面**（`.github/workflows/ci.yml`，Go `1.26.11`）：gofmt 未格式化即红 → `go build ./...` → `go vet ./...` → `govulncheck ./...` → **Migrate（`TestMigrationReplay_Integration`）** → `go test ./... -count=1 -coverprofile=coverage.out` + **覆盖率门**（RISK-CI-GATES）→ `go test -race ./... -count=1` → `staticcheck v0.8.2 ./...`；`-race` 依赖 cgo + gcc（`ubuntu-latest` 自带），本机 Windows 无 gcc，race 腿只能由 CI 验证。
 - 若某一步需要别的仓的源码目录才过，那是**边界画错了**——停下来修边界，**不要**加 `replace ../xxx` 绕过。
 - 本机同时改多个仓时可用 `go.work` 联调，但**它不入库**（`.gitignore` 已挡）。
 - 真库腿（`internal/pgstore` 的四条 `*_Integration` / `TestApprovePromotesRevisionOnRealPG`）统一读
   `RISK_TEST_DSN`，且必须指向 `*_test` 库（例 `postgres://…/tellurion_risk_test?sslmode=disable`，步骤见
   `docs/runbook.md`「真库腿」）。未设置 ⇒ 显式 `SKIP: RISK_TEST_DSN not set`，不是假绿；旧名
   `TELLURION_RISK_TEST_DSN` 已废弃，设它不会再跑任何用例。
+- **CI 的 DB 腿（RISK-CI-GATES，2026-11-13）**：Test job 起 `postgres:16` service（`pg_isready -U postgres -d tellurion_risk_test`）+ job 级注入 `RISK_TEST_DSN`（CI 内临时库，**绝不指向部署库**）。Test 前先跑 `go test ./internal/pgstore -run '^TestMigrationReplay_Integration$'` 应用迁移——入口就是服务启动同款 `pgstore.Migrate`（`rule.Migrations()` 的幂等 DDL，无版本表），不另造 `.sql` 镜像、不复制 core 脚本。效果：库侧 **4 条**用例由 SKIP 转 PASS（带 DSN 103 PASS / 0 SKIP，无 DSN 99 PASS / 4 SKIP）；**本地不设 DSN 仍按设计 skip**。
+- **覆盖率门（RISK-CI-GATES）**：阈值 **69%**（语句加权，`go tool cover -func` 的 `total`），来源 = 2026-11-13 在隔离 PG 16 上真跑全套件实测 **74.6%**，取整 74 减 5（跨仓口径见 `tellurion:docs/TASKS.md` → `X-COVERAGE-FLOOR`）。低于阈值 `exit 1`。**这 5 点余量是防累计漂移的缓冲**：本仓 1,646 条语句，删单个可编译测试文件最多掉 1.5 点（`internal/rule/seed_test.go` ⇒ 73.5%）；漏配 DSN 时实测 **66.3% < 69% 直接红**（门真正要拦的事故）。删到破坏编译的用例（如 `internal/httpapi/api_test.go`）时测试步 `EXIT=1` 红。
 
 ## 3. 边界（硬约束）
 

@@ -26,6 +26,7 @@
 | X-DEP-BUMP-CONSUMERS | 消费方依赖抬升（kit v0.5.0 / go 1.26.11）+ govulncheck 门 | 2026-11-12 | `c19634a`（pin）、回补见本条 | [施工记录](#X-DEP-BUMP-CONSUMERS) |
 | X-AGENTS-DEPENDENCY-TABLE | 依赖表按 go.mod 实测对齐 | 2026-11-12 | `74cfbf5` | [施工记录](#X-AGENTS-DEPENDENCY-TABLE) |
 | X-CI-RACE-STATICCHECK | CI 增加 `-race` 与 `staticcheck` | 2026-11-12 | `147eb56` | [施工记录](#X-CI-RACE-STATICCHECK) |
+| RISK-CI-GATES | CI 起 PG 16 + 覆盖率门（库侧 4 条 SKIP→PASS；实测 74.6% → 门 69%） | 2026-11-13 | 见本条 | [原文与施工记录](#RISK-CI-GATES) |
 
 ---
 
@@ -1063,3 +1064,27 @@
 - **④ 约束与非目标**：不改策略表与鉴权实现；token 只走环境变量。
 - **⑤ 验收**：三条状态码（200 / 401 / 403）；破坏验证 = 换错 token ⇒ 401。
 - **⑥ 边界**：本仓校验侧；core 侧装配归 `tellurion`。
+
+---
+
+## 2026-11-13 收口
+
+<a id="RISK-CI-GATES"></a>
+### RISK-CI-GATES · CI 起 PG 并设覆盖率门（1 条 DB 用例不再 skip）[P2] ✅ 2026-11-13
+
+> 档 4（测试）· 来源：03-testing P1-3 / P2-2 · 顺序 4-8 · 依赖：core 伞 `X-COVERAGE-FLOOR`
+
+- **① 目标**：CI 真跑 DB 腿（1 条按设计 skip 的用例），并补覆盖率门。
+- **② 上下文**：Test job 无 postgres service / 无 DSN，库侧用例长期 skip；DSN 变量名与迁移入口施工时以测试代码为准。
+- **③ 要求**：① 加 `postgres:16` service + healthcheck；② 注入 DSN；③ Test 前应用本仓迁移；④ 本地无 DSN 仍 skip；⑤ 覆盖率门 = 实测 - 5。
+- **④ 约束与非目标**：不改业务代码；不把 skip 改成假通过；不顺手改风控规则。
+- **⑤ 验收**：CI 中 DB 用例 PASS（数量 > 0）；删测试 ⇒ 门红；本地无 DSN ⇒ skip 且原因可读。
+- **⑥ 边界**：本仓 CI + 测试夹具。
+
+**施工记录（2026-11-13）**：
+- **DSN / 迁移口径（实测取得）**：测试统一读 `RISK_TEST_DSN`（旧名 `TELLURION_RISK_TEST_DSN` 已废弃）；迁移入口 = `pgstore.Migrate`（`rule.Migrations()` 幂等 DDL，无版本表），CI 以 `go test ./internal/pgstore -count=1 -run '^TestMigrationReplay_Integration$' -v` 在 Test 前应用，不另造 `.sql` 镜像。
+- **CI 改动**：`.github/workflows/ci.yml` 的 Test job 起 `postgres:16` service（`pg_isready -U postgres -d tellurion_risk_test`，10s/5s/5 次）+ job 级注入 `RISK_TEST_DSN`（CI 内临时库，**绝不指向部署库**）；新增 `Migrate（pgstore.Migrate）` 步；`Test` 步改 `go test ./... -count=1 -coverprofile=coverage.out`；新增 `Coverage gate（>= 69%）` 步（awk 解析 `go tool cover -func` 的 `total`，低于即 `exit 1`）。
+- **实测（隔离 PG 16 容器 55432 / 库 `tellurion_risk_test`，未碰部署库 `tellurion`）**：带 DSN `103 PASS / 0 SKIP`、覆盖率 `total: 74.6%`（1,646 条语句）；无 DSN `99 PASS / 4 SKIP`（`TestLegacyActorNullRow_Integration` / `TestApprovePromotesRevisionOnRealPG` / `TestMigrationReplay_Integration` / `TestQueryEvents_Integration`）、`66.3%`。单内标题的「1 条」是旧口径，**实测库侧 4 条**由 SKIP 转 PASS，已按实测改正（不改测试凑数）。门 = 74 取整 - 5 = **69%**。
+- **破坏 / 负向验证（真做真还原）**：① 删 `internal/httpapi/api_test.go` ⇒ 测试 `EXIT=1` 红，`git checkout --` 逐字节还原后复绿、`git diff` 为空；② 可编译单文件最大影响 1.5 点（删 `internal/rule/seed_test.go` ⇒ 73.5%，仍在门内；`cmd/riskservice/main_test.go` ⇒ 73.1%），故 5 点余量按「防累计漂移」定位，**不是**「删任一测试文件必红」；③ 漏配 DSN ⇒ 66.3% < 69% 门红（门真正要拦的事故）。
+- **文档**：`AGENTS.md` §2 补 CI 链（Migrate + 覆盖率门）与两条 bullet（DB 腿 4 条 SKIP→PASS；门 69% 的来源、边界与破坏验证）；`docs/TASKS.md` 移除本单六字段块、frontmatter 记 `completed-2026-11-13`；`RISK-EVENTS-COVERAGE` 维持 ⏸ 原样保留。
+- **门禁**：`gofmt -l .` 无输出；`go build ./...` / `go vet ./...` / `go test ./... -count=1`（无 DSN，库侧按设计 skip）全绿；`python -c "import yaml;yaml.safe_load(open('.github/workflows/ci.yml'))"` 解析通过。

@@ -12,6 +12,24 @@ jobs:
   go:
     name: Build & Test
     runs-on: ubuntu-latest
+    # RISK-CI-GATES：DB 腿不再长期 skip。库只装测试 schema（risk），DSN 统一走
+    # RISK_TEST_DSN（internal/pgstore/testdsn_test.go）；本地未设置时用例仍显式 skip。
+    env:
+      RISK_TEST_DSN: postgres://postgres:postgres@127.0.0.1:5432/tellurion_risk_test?sslmode=disable
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tellurion_risk_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d tellurion_risk_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -42,8 +60,22 @@ jobs:
       - name: Govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
+      # RISK-CI-GATES：Test 的 DB 腿依赖 risk schema，先应用本仓迁移。
+      # 入口就是服务启动时用的 pgstore.Migrate（= rule.Migrations() 的幂等 DDL，
+      # 无版本表）；这里复用已有的迁移重放集成腿，不另造 .sql 镜像、不复制 core 脚本。
+      - name: Migrate（pgstore.Migrate）
+        run: go test ./internal/pgstore -count=1 -run '^TestMigrationReplay_Integration$' -v
+
       - name: Test
-        run: go test ./... -count=1
+        run: go test ./... -count=1 -coverprofile=coverage.out
+
+      # RISK-CI-GATES：覆盖率门 = 实测 total 74.6% 取整 74 − 5 = 69。
+      # 阈值来源与复测方法见 AGENTS.md §2；调门必须同时改这里与文档。
+      - name: Coverage gate（>= 69%）
+        run: |
+          total="$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$NF); print $NF}')"
+          echo "total coverage = ${total}% (gate = 69%)"
+          awk -v total="$total" -v gate=69 'BEGIN { if (total+0 < gate+0) { printf "coverage %.1f%% below gate %d%%\n", total, gate; exit 1 } }'
 
       # race 需要 cgo + gcc（ubuntu-latest 自带）；本机 Windows 无 gcc，只能由 CI 验证。
       - name: Test（-race）
